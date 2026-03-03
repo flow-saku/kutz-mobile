@@ -79,7 +79,7 @@ export default function DiscoverScreen() {
       const binding = await getActiveClientBinding(session.user.id);
       if (!binding) return;
       setMyBarberId(binding.barberId);
-      await saveSelectedBarberId(binding.barberId);
+      await saveSelectedBarberId(binding.barberId, session.user.id);
     });
   }, []);
 
@@ -203,7 +203,8 @@ export default function DiscoverScreen() {
               if (error) throw error;
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setMyBarberId(ownerId);
-              await saveSelectedBarberId(ownerId);
+              // Scope to this user so switching shops on one account doesn't affect others
+              await saveSelectedBarberId(ownerId, session.user.id);
               setSuccessId(ownerId);
               setTimeout(() => { router.replace('/(client)/home'); }, 1200);
             } catch (err: any) {

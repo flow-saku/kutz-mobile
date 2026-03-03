@@ -3,14 +3,45 @@ import { supabase } from '@/lib/supabase';
 import { resolveBarberOwnerId } from '@/lib/barber';
 import type { User } from '@supabase/supabase-js';
 
+// Legacy shared key — kept only for first-launch migration
 export const CLIENT_SELECTED_BARBER_KEY = 'client_selected_barber_id';
 
-export async function saveSelectedBarberId(barberId: string | null | undefined) {
+// Per-user key — prevents one account's shop selection bleeding into another
+const userBarberKey = (uid: string) => `client_selected_barber_id_${uid}`;
+
+/**
+ * Persist the selected barbershop for a specific user.
+ * Always pass `userId` so the value is scoped to that account.
+ */
+export async function saveSelectedBarberId(
+  barberId: string | null | undefined,
+  userId?: string,
+) {
   if (!barberId) return;
-  await AsyncStorage.setItem(CLIENT_SELECTED_BARBER_KEY, barberId);
+  if (userId) {
+    await AsyncStorage.setItem(userBarberKey(userId), barberId);
+  } else {
+    // Fallback: legacy shared key (callers without userId context)
+    await AsyncStorage.setItem(CLIENT_SELECTED_BARBER_KEY, barberId);
+  }
 }
 
-export async function getSelectedBarberId() {
+/**
+ * Read the selected barbershop for a specific user.
+ * Tries the user-scoped key first, then falls back to the legacy shared key
+ * (so existing installs keep working after the first update).
+ */
+export async function getSelectedBarberId(userId?: string): Promise<string | null> {
+  if (userId) {
+    const scoped = await AsyncStorage.getItem(userBarberKey(userId));
+    if (scoped) return scoped;
+    // First-time migration: promote the legacy value to the scoped key
+    const legacy = await AsyncStorage.getItem(CLIENT_SELECTED_BARBER_KEY);
+    if (legacy) {
+      await AsyncStorage.setItem(userBarberKey(userId), legacy);
+    }
+    return legacy;
+  }
   return AsyncStorage.getItem(CLIENT_SELECTED_BARBER_KEY);
 }
 
@@ -33,7 +64,8 @@ export async function getActiveClientBinding(authUserId: string): Promise<Active
   const list = ((rows as any[]) ?? []).filter((r) => !!r?.barber_id);
   if (list.length === 0) return null;
 
-  const selectedRaw = await getSelectedBarberId();
+  // Use user-scoped key so different accounts don't overwrite each other
+  const selectedRaw = await getSelectedBarberId(authUserId);
   const selectedOwner = await resolveBarberOwnerId(selectedRaw);
 
   const normalized = await Promise.all(
@@ -50,7 +82,7 @@ export async function getActiveClientBinding(authUserId: string): Promise<Active
 
   if (!chosen?.barber_owner_id) return null;
 
-  await saveSelectedBarberId(chosen.barber_owner_id);
+  await saveSelectedBarberId(chosen.barber_owner_id, authUserId);
 
   return {
     clientId: chosen.id,
@@ -82,6 +114,7 @@ export async function ensureClientLinkedToShop(user: User, rawBarberId: string |
   });
 
   if (error) throw error;
-  await saveSelectedBarberId(barberId);
+  // Always scope to the authenticated user
+  await saveSelectedBarberId(barberId, user.id);
   return data;
 }

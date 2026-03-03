@@ -65,7 +65,8 @@ export default function LoginScreen() {
     if (finalMode !== 'client') return;
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) return;
-    const selectedBarberId = await getSelectedBarberId();
+    // Pass user ID so we read the user-scoped key, not the shared legacy key
+    const selectedBarberId = await getSelectedBarberId(session.user.id);
     if (!selectedBarberId) return;
     await ensureClientLinkedToShop(session.user, selectedBarberId);
   };

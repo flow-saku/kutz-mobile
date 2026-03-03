@@ -67,7 +67,7 @@ export default function Index() {
       // If user already selected a shop in mobile flow, guarantee they are linked
       // to CRM on auth (auto-create/update client row for that shop).
       if (!binding?.barberId) {
-        const selectedBarberId = await getSelectedBarberId();
+        const selectedBarberId = await getSelectedBarberId(userId);
         if (selectedBarberId) {
           try {
             await ensureClientLinkedToShop(session.user, selectedBarberId);
@@ -84,7 +84,7 @@ export default function Index() {
         return;
       }
 
-      await saveSelectedBarberId(binding.barberId);
+      await saveSelectedBarberId(binding.barberId, userId);
 
       router.replace('/(client)/home');
     })();
