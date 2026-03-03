@@ -111,11 +111,12 @@ export default function BarberSettings() {
         supabase.from('profiles').select('display_name, shop_name, stripe_account_id, stripe_onboarding_complete, stripe_charges_enabled, pass_fees_to_client, address, city, country').or(`id.eq.${uid},user_id.eq.${uid}`).limit(1).maybeSingle(),
         supabase.from('barber_schedule').select('day_of_week, start_time, end_time, is_active').eq('barber_id', uid),
         supabase.from('clients').select('id', { count: 'exact', head: true }).eq('barber_id', uid),
-        // Check if this user is a staff member (as opposed to a shop owner)
-        supabase.from('team_members').select('id').eq('user_id', uid).eq('is_active', true).maybeSingle(),
+        // Fetch team_members row — includes working_hours for staff
+        supabase.from('team_members').select('id, working_hours').eq('user_id', uid).eq('is_active', true).maybeSingle(),
       ]);
-      // If found in team_members, this user is staff — hide owner-only sections
-      setIsStaffMember(!!(staffRes as any).data);
+
+      const isStaff = !!(staffRes as any).data;
+      setIsStaffMember(isStaff);
 
       const name = (profileRes.data as any)?.display_name || '';
       const shop = (profileRes.data as any)?.shop_name || '';
@@ -133,14 +134,31 @@ export default function BarberSettings() {
       setShopCountry((profileRes.data as any)?.country || '');
 
       const sched: Record<number, DaySchedule> = {};
-      for (const day of DAYS) {
-        const row = ((schedRes.data as any[]) ?? []).find((r: any) => r.day_of_week === day.num);
-        sched[day.num] = {
-          available: row?.is_active ?? false,
-          start: row?.start_time?.slice(0, 5) ?? '09:00',
-          end:   row?.end_time?.slice(0, 5) ?? '18:00',
-        };
+
+      if (isStaff) {
+        // ── Staff: hours live in team_members.working_hours (JSON) ──
+        // This is the same source the web dashboard reads/writes, so they stay in sync.
+        const wh: any[] = (staffRes as any).data?.working_hours ?? [];
+        for (const day of DAYS) {
+          const row = wh.find((r: any) => r.day_of_week === day.num);
+          sched[day.num] = {
+            available: row?.is_active ?? false,
+            start: row?.start_time?.slice(0, 5) ?? '09:00',
+            end:   row?.end_time?.slice(0, 5)   ?? '18:00',
+          };
+        }
+      } else {
+        // ── Owner: hours live in barber_schedule table ──
+        for (const day of DAYS) {
+          const row = ((schedRes.data as any[]) ?? []).find((r: any) => r.day_of_week === day.num);
+          sched[day.num] = {
+            available: row?.is_active ?? false,
+            start: row?.start_time?.slice(0, 5) ?? '09:00',
+            end:   row?.end_time?.slice(0, 5)   ?? '18:00',
+          };
+        }
       }
+
       setSchedule(sched);
       setScheduleLoaded(true);
     });
