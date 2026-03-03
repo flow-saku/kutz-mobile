@@ -205,25 +205,7 @@ export default function BarberSettings() {
     setSavingLocation(false);
   };
 
-  const toggleDay = async (dayNum: number) => {
-    if (!barberId) return;
-    const newAvail = !schedule[dayNum]?.available;
-    setSchedule(prev => ({ ...prev, [dayNum]: { ...prev[dayNum], available: newAvail } }));
-    try {
-      const { error } = await supabase.from('barber_schedule').upsert({
-        barber_id: barberId,
-        day_of_week: dayNum,
-        is_active:  newAvail,
-        start_time: schedule[dayNum]?.start ?? '09:00',
-        end_time:   schedule[dayNum]?.end ?? '18:00',
-      }, { onConflict: 'barber_id,day_of_week' });
-      if (error) throw error;
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch {
-      setSchedule(prev => ({ ...prev, [dayNum]: { ...prev[dayNum], available: !newAvail } }));
-      Alert.alert('Error', 'Failed to update schedule');
-    }
-  };
+  // Working hours are read-only on mobile — edit them on the web dashboard
 
   const handleLogout = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -445,11 +427,16 @@ export default function BarberSettings() {
             </View>
           </View>
 
-          {/* ── Working Hours ── */}
+          {/* ── Working Hours (read-only — edit on web dashboard) ── */}
           {scheduleLoaded && (
             <View>
               <Text style={[S.secLabel, { color: C.text3 }]}>WORKING HOURS</Text>
               <View style={[S.section, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+                {/* Info banner */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: C.border }}>
+                  <Clock color={C.text3} size={13} strokeWidth={1.8} />
+                  <Text style={{ fontSize: 12, color: C.text3, flex: 1 }}>Manage your hours on the web dashboard</Text>
+                </View>
                 {DAYS.map((day, idx) => {
                   const d = schedule[day.num] ?? { available: false, start: '09:00', end: '18:00' };
                   return (
@@ -457,13 +444,12 @@ export default function BarberSettings() {
                       S.dayRow,
                       idx < DAYS.length - 1 && { borderBottomWidth: 1, borderBottomColor: C.border },
                     ]}>
-                      <Switch
-                        value={d.available}
-                        onValueChange={() => toggleDay(day.num)}
-                        trackColor={{ false: C.bg3, true: C.accent }}
-                        thumbColor={Platform.OS === 'android' ? (d.available ? C.accent : '#fff') : undefined}
-                        ios_backgroundColor={C.bg3}
-                      />
+                      {/* Simple dot instead of interactive switch */}
+                      <View style={{
+                        width: 8, height: 8, borderRadius: 4,
+                        backgroundColor: d.available ? C.accent : C.bg3,
+                        marginRight: 4,
+                      }} />
                       <Text style={[S.dayLabel, { color: d.available ? C.text : C.text3 }]}>{day.short}</Text>
                       <Text style={[S.dayHours, { color: d.available ? C.text2 : C.text3 }]}>
                         {d.available ? `${d.start} – ${d.end}` : 'Closed'}
