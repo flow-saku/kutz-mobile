@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Kutz",
+    "slug": "cut-confidant-mobile",
+    "scheme": "kutz",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0a"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSUserNotificationAlertStyle": "alert",
+        "NSLocationWhenInUseUsageDescription": "Used to find barbershops near you."
+      },
+      "bundleIdentifier": "com.sakuholma.kutz"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a0a0a"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": true,
+      "permissions": [
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ],
+      "package": "com.sakuholma.kutz"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Used to find barbershops near you."
+        }
+      ]
+    ]
+  }
+}

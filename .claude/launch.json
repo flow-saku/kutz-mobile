@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kutz-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/sakuholma/Downloads/cut-confidant-main", "run", "dev"],
+      "port": 8080
+    }
+  ]
+}
