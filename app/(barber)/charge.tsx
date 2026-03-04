@@ -11,6 +11,7 @@ import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase, SUPABASE_URL } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
+import { resolveBarberScope } from '@/lib/barber';
 import { useToast } from '@/lib/toast';
 
 const NUM_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'];
@@ -40,8 +41,11 @@ export default function ChargeScreen() {
       Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
     ]).start();
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) setBarberId(session.user.id);
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session?.user) {
+        const scope = await resolveBarberScope(session.user.id);
+        setBarberId(scope.ownerUid);
+      }
     });
   }, []);
 
