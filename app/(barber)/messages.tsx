@@ -8,6 +8,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { MessageCircle, Send, ArrowLeft, Hash, Users } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
+import { resolveBarberScope } from '@/lib/barber';
 import { format, isToday, isYesterday } from 'date-fns';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -85,6 +86,8 @@ export default function BarberMessages() {
 
   // ── Auth ─────────────────────────────────────────────────────────────────
   const [barberId, setBarberId] = useState<string | null>(null);
+  // ownerUid is used for client conversations and team channels (scoped to shop owner)
+  const [ownerUid, setOwnerUid] = useState<string | null>(null);
 
   // ── Tab ──────────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'clients' | 'internal'>('clients');
@@ -263,7 +266,7 @@ export default function BarberMessages() {
       await supabase.from('team_channels' as any)
         .update({ last_message: text.slice(0, 100), last_message_at: new Date().toISOString() } as any)
         .eq('id', channelId);
-      await fetchTeamChannels(barberId);
+      if (ownerUid) await fetchTeamChannels(ownerUid);
     } catch (err: any) {
       Alert.alert('Failed to send', err.message || 'Please try again');
       setNewMessage(text);
@@ -387,13 +390,16 @@ export default function BarberMessages() {
   // ═══════════════════════════════════════════════════════════════════════════
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session?.user) { setLoading(false); return; }
       const uid = session.user.id;
       setBarberId(uid);
+      const scope = await resolveBarberScope(uid);
+      const owner = scope.ownerUid;
+      setOwnerUid(owner);
       Promise.all([
-        fetchClientConvs(uid),
-        fetchTeamChannels(uid),
+        fetchClientConvs(owner),
+        fetchTeamChannels(owner),
         fetchBarberConvs(uid),
       ]).finally(() => setLoading(false));
     });
@@ -401,15 +407,15 @@ export default function BarberMessages() {
 
   // Client conversations realtime
   useEffect(() => {
-    if (!barberId) return;
+    if (!ownerUid) return;
     const ch = supabase.channel('barber_client_msgs_rt')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations', filter: `barber_id=eq.${barberId}` },
-        () => fetchClientConvs(barberId))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations', filter: `barber_id=eq.${ownerUid}` },
+        () => fetchClientConvs(ownerUid))
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' },
-        () => fetchClientConvs(barberId))
+        () => fetchClientConvs(ownerUid))
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [barberId, fetchClientConvs]);
+  }, [ownerUid, fetchClientConvs]);
 
   // Client chat realtime
   useEffect(() => {
@@ -435,7 +441,7 @@ export default function BarberMessages() {
           await fetchProfiles([msg.sender_id]);
           setChannelMessages(prev => prev.some(m => m.id === msg.id) ? prev : [...prev, msg]);
           scrollToBottom();
-          if (barberId) fetchTeamChannels(barberId);
+          if (ownerUid) fetchTeamChannels(ownerUid);
         })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -468,13 +474,13 @@ export default function BarberMessages() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    if (barberId) await Promise.all([
-      fetchClientConvs(barberId),
-      fetchTeamChannels(barberId),
+    if (ownerUid && barberId) await Promise.all([
+      fetchClientConvs(ownerUid),
+      fetchTeamChannels(ownerUid),
       fetchBarberConvs(barberId),
     ]);
     setRefreshing(false);
-  }, [barberId]);
+  }, [barberId, ownerUid]);
 
   const goBack = () => {
     setSelectedClientConv(null);
@@ -483,9 +489,9 @@ export default function BarberMessages() {
     setChannelMessages([]);
     setBarberDMMessages([]);
     setNewMessage('');
-    if (barberId) {
-      fetchClientConvs(barberId);
-      fetchTeamChannels(barberId);
+    if (ownerUid && barberId) {
+      fetchClientConvs(ownerUid);
+      fetchTeamChannels(ownerUid);
       fetchBarberConvs(barberId);
     }
   };

@@ -13,6 +13,7 @@ import {
 import * as Haptics from 'expo-haptics';
 import { supabase } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
+import { resolveBarberScope } from '@/lib/barber';
 import { format } from 'date-fns';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -156,8 +157,8 @@ export default function BarberClients() {
       if (!session?.user) { setLoading(false); return; }
       const uid = session.user.id;
       setBarberId(uid);
-      const { data: profile } = await supabase.from('profiles').select('id, user_id').or(`id.eq.${uid},user_id.eq.${uid}`).maybeSingle();
-      const ids = Array.from(new Set([uid, (profile as any)?.id, (profile as any)?.user_id].filter(Boolean))) as string[];
+      const scope = await resolveBarberScope(uid);
+      const { scopeIds: ids } = scope;
       setScopeIds(ids);
       fetchClients(ids);
     });

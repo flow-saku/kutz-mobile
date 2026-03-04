@@ -13,6 +13,7 @@ import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { supabase, SUPABASE_URL } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
+import { resolveBarberScope } from '@/lib/barber';
 import {
   format, addDays, subDays, startOfWeek, isSameDay, isToday,
   addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval,
@@ -77,6 +78,7 @@ export default function BarberAppointments() {
   const [barberEmail, setBarberEmail]   = useState<string | null>(null);
   const [shopName, setShopName]         = useState<string>('');
   const [barberId, setBarberId]         = useState<string | null>(null);
+  const [staffMemberId, setStaffMemberId] = useState<string | null>(null);
   const [stripeReady, setStripeReady]   = useState(false);
   const [chargingId, setChargingId]     = useState<string | null>(null);
 
@@ -96,15 +98,17 @@ export default function BarberAppointments() {
   };
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
-  const fetchAppointments = useCallback(async (ids: string[], date: Date) => {
+  const fetchAppointments = useCallback(async (ids: string[], date: Date, tmId?: string | null) => {
     if (!ids.length) return;
     try {
-      const { data } = await supabase
+      let q = supabase
         .from('appointments')
         .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_method, services(name)')
         .in('barber_id', ids)
         .eq('date', format(date, 'yyyy-MM-dd'))
         .order('start_time', { ascending: true });
+      if (tmId) q = (q as any).eq('team_member_id', tmId);
+      const { data } = await q;
       const mapped = ((data as any[]) ?? []).map((a) => ({
         ...a,
         price: a.price_charged,
@@ -117,18 +121,20 @@ export default function BarberAppointments() {
   }, []);
 
   // Fetch dot counts for entire visible month
-  const fetchMonthDots = useCallback(async (ids: string[], month: Date) => {
+  const fetchMonthDots = useCallback(async (ids: string[], month: Date, tmId?: string | null) => {
     if (!ids.length) return;
     try {
       const start = format(startOfMonth(month), 'yyyy-MM-dd');
       const end   = format(endOfMonth(month),   'yyyy-MM-dd');
-      const { data } = await supabase
+      let q = supabase
         .from('appointments')
         .select('date, status')
         .in('barber_id', ids)
         .gte('date', start)
         .lte('date', end)
         .not('status', 'eq', 'cancelled');
+      if (tmId) q = (q as any).eq('team_member_id', tmId);
+      const { data } = await q;
       const map: Record<string, number> = {};
       for (const r of (data as any[]) ?? []) {
         map[r.date] = (map[r.date] ?? 0) + 1;
@@ -141,37 +147,40 @@ export default function BarberAppointments() {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session?.user) { setLoading(false); return; }
       const uid = session.user.id;
+      const scope = await resolveBarberScope(uid);
+      const { scopeIds: ids, ownerUid, staffMemberId: tmId, shopName: sName } = scope;
+
+      // Fetch stripe info from owner profile
       const { data: profile } = await supabase
         .from('profiles')
-        .select('id, user_id, shop_name, email, stripe_account_id, stripe_charges_enabled')
-        .or(`id.eq.${uid},user_id.eq.${uid}`)
+        .select('email, stripe_charges_enabled')
+        .or(`id.eq.${ownerUid},user_id.eq.${ownerUid}`)
         .maybeSingle();
-      const ids = Array.from(
-        new Set([uid, profile?.id, profile?.user_id].filter(Boolean) as string[])
-      );
+
       setBarberEmail(session.user.email ?? (profile as any)?.email ?? null);
-      setShopName((profile as any)?.shop_name ?? '');
-      setBarberId(uid);
+      setShopName(sName);
+      setBarberId(ownerUid);
+      setStaffMemberId(tmId);
       setStripeReady((profile as any)?.stripe_charges_enabled === true);
       setScopeIds(ids);
-      fetchAppointments(ids, selectedDate);
-      fetchMonthDots(ids, calMonth);
+      fetchAppointments(ids, selectedDate, tmId);
+      fetchMonthDots(ids, calMonth, tmId);
     });
   }, []);
 
-  useEffect(() => { if (scopeIds.length) fetchAppointments(scopeIds, selectedDate); }, [selectedDate, scopeIds]);
-  useEffect(() => { if (scopeIds.length) fetchMonthDots(scopeIds, calMonth); }, [calMonth, scopeIds]);
+  useEffect(() => { if (scopeIds.length) fetchAppointments(scopeIds, selectedDate, staffMemberId); }, [selectedDate, scopeIds]);
+  useEffect(() => { if (scopeIds.length) fetchMonthDots(scopeIds, calMonth, staffMemberId); }, [calMonth, scopeIds]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     if (scopeIds.length) {
       await Promise.all([
-        fetchAppointments(scopeIds, selectedDate),
-        fetchMonthDots(scopeIds, calMonth),
+        fetchAppointments(scopeIds, selectedDate, staffMemberId),
+        fetchMonthDots(scopeIds, calMonth, staffMemberId),
       ]);
     }
     setRefreshing(false);
-  }, [scopeIds, selectedDate, calMonth]);
+  }, [scopeIds, selectedDate, calMonth, staffMemberId]);
 
   const updateStatus = async (aptId: string, newStatus: string) => {
     try {
@@ -205,7 +214,7 @@ export default function BarberAppointments() {
         }
       }
 
-      if (scopeIds.length) fetchAppointments(scopeIds, selectedDate);
+      if (scopeIds.length) fetchAppointments(scopeIds, selectedDate, staffMemberId);
     } catch (err: any) { Alert.alert('Error', err.message || 'Failed to update'); }
   };
 
@@ -267,7 +276,7 @@ export default function BarberAppointments() {
                 .eq('id', apt.id);
 
               // Refresh list
-              if (scopeIds.length) fetchAppointments(scopeIds, selectedDate);
+              if (scopeIds.length) fetchAppointments(scopeIds, selectedDate, staffMemberId);
 
               Alert.alert(
                 '✅ Payment Created',

@@ -11,6 +11,7 @@ import {
 } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
+import { resolveBarberScope } from '@/lib/barber';
 import { useTheme } from '@/lib/theme';
 import { format, startOfWeek } from 'date-fns';
 import * as Haptics from 'expo-haptics';
@@ -44,6 +45,7 @@ export default function BarberDashboard() {
   const [primaryId, setPrimaryId]       = useState<string | null>(null);
   const [shopName, setShopName]         = useState('My Shop');
   const [isOwner, setIsOwner]           = useState(false);
+  const [staffMemberId, setStaffMemberId] = useState<string | null>(null);
   const [todayApts, setTodayApts]       = useState<any[]>([]);
   const [staffMap, setStaffMap]         = useState<Record<string, string>>({});
   const [pendingCount, setPendingCount] = useState(0);
@@ -81,7 +83,7 @@ export default function BarberDashboard() {
     } catch { /* non-critical */ }
   }
 
-  async function fetchData(ids: string[], uid: string) {
+  async function fetchData(ids: string[], uid: string, tmId?: string | null) {
     try {
       const now = new Date();
       const today = format(now, 'yyyy-MM-dd');
@@ -91,15 +93,20 @@ export default function BarberDashboard() {
       const profileRes = await supabase.from('profiles').select('display_name, shop_name')
         .or(`id.eq.${uid},user_id.eq.${uid}`).limit(1).maybeSingle();
 
-      const todayRes = await supabase.from('appointments')
+      // Staff barbers: filter to their own appointments via team_member_id
+      let todayQ = supabase.from('appointments')
         .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_id, payment_method, services(name)')
         .in('barber_id', ids)
         .eq('date', today)
         .order('start_time', { ascending: true });
+      if (tmId) todayQ = (todayQ as any).eq('team_member_id', tmId);
+      const todayRes = await todayQ;
 
-      const weekRes = await supabase.from('appointments')
+      let weekQ = supabase.from('appointments')
         .select('price_charged')
         .in('barber_id', ids).eq('status', 'completed').gte('date', weekStartStr);
+      if (tmId) weekQ = (weekQ as any).eq('team_member_id', tmId);
+      const weekRes = await weekQ;
 
       const clientCountRes = await supabase.from('clients')
         .select('*', { count: 'exact', head: true }).in('barber_id', ids);
@@ -139,24 +146,17 @@ export default function BarberDashboard() {
       if (!session?.user) { setLoading(false); router.replace('/(auth)/login'); return; }
       const uid = session.user.id;
 
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('id, user_id, shop_name, display_name')
-        .or(`id.eq.${uid},user_id.eq.${uid}`)
-        .limit(1)
-        .maybeSingle();
-
-      const ids = Array.from(
-        new Set([uid, (profile as any)?.id, (profile as any)?.user_id].filter(Boolean) as string[])
-      );
-      const ownerUid = (profile as any)?.user_id ?? (profile as any)?.id ?? uid;
+      const scope = await resolveBarberScope(uid);
+      const { scopeIds: ids, ownerUid, staffMemberId: tmId, shopName: sName, isStaff } = scope;
 
       setPrimaryId(uid);
       setScopeIds(ids);
+      setStaffMemberId(tmId);
       scopeRef.current = ids;
-      setShopName((profile as any)?.shop_name || (profile as any)?.display_name || 'My Shop');
+      setShopName(sName);
+      setIsOwner(!isStaff);
 
-      await fetchData(ids, uid);
+      await fetchData(ids, ownerUid, tmId);
       loadStaffNames(ownerUid); // non-blocking
 
       setLoading(false);
@@ -170,7 +170,7 @@ export default function BarberDashboard() {
     const ch = supabase.channel('barber_dash_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments',
         filter: `barber_id=eq.${scopeIds[0]}` },
-        () => { if (scopeRef.current.length) fetchData(scopeRef.current, scopeIds[0]); })
+        () => { if (scopeRef.current.length) fetchData(scopeRef.current, scopeIds[0], staffMemberId); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [scopeIds]);
@@ -178,10 +178,10 @@ export default function BarberDashboard() {
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     if (scopeRef.current.length && primaryId) {
-      await fetchData(scopeRef.current, primaryId);
+      await fetchData(scopeRef.current, primaryId, staffMemberId);
     }
     setRefreshing(false);
-  }, [primaryId]);
+  }, [primaryId, staffMemberId]);
 
   const updateStatus = async (aptId: string, newStatus: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -189,7 +189,7 @@ export default function BarberDashboard() {
     try {
       const { error } = await supabase.from('appointments').update({ status: newStatus }).eq('id', aptId);
       if (error) throw error;
-      if (scopeRef.current.length && primaryId) await fetchData(scopeRef.current, primaryId);
+      if (scopeRef.current.length && primaryId) await fetchData(scopeRef.current, primaryId, staffMemberId);
     } catch (err: any) { Alert.alert('Error', err.message || 'Failed to update'); }
     setUpdatingId(null);
   };
