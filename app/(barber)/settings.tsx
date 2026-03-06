@@ -12,7 +12,7 @@ import {
 import * as Haptics from 'expo-haptics';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
-import { supabase } from '@/lib/supabase';
+import { supabase, SUPABASE_URL } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
 import { useToast } from '@/lib/toast';
 import AsyncStorage from '@react-native-async-storage/async-storage';
