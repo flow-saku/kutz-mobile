@@ -231,18 +231,6 @@ export default function HomeScreen() {
         new Set([binding.barberId, binding.rawBarberId, (profile as any)?.id, (profile as any)?.user_id].filter(Boolean))
       ) as string[];
 
-      console.log('[HOME DEBUG] auth user id:', user.id);
-      console.log('[HOME DEBUG] binding:', JSON.stringify(binding));
-      console.log('[HOME DEBUG] profile:', JSON.stringify(profile));
-      console.log('[HOME DEBUG] scopeIds:', JSON.stringify(scopeIds));
-
-      // Debug: query without client_id filter to see if appointments exist at all
-      const debugAll = await supabase.from('appointments').select('id, client_id, barber_id, status, date').in('barber_id', scopeIds).limit(5);
-      console.log('[HOME DEBUG] appointments (any client, barber match):', JSON.stringify(debugAll.data), 'error:', JSON.stringify(debugAll.error));
-
-      const debugClient = await supabase.from('appointments').select('id, client_id, barber_id, status, date').eq('client_id', binding.clientId).limit(5);
-      console.log('[HOME DEBUG] appointments (client match, any barber):', JSON.stringify(debugClient.data), 'error:', JSON.stringify(debugClient.error));
-
       const [pts, appt, rwds, clientRow, bdayConfig] = await Promise.all([
         supabase.from('loyalty_points').select('points_balance')
           .eq('client_id', binding.clientId).eq('barber_id', binding.barberId).maybeSingle(),
@@ -261,8 +249,6 @@ export default function HomeScreen() {
         supabase.from('birthday_config').select('is_active, offer_type, offer_value, message, valid_days')
           .eq('barber_id', binding.barberId).maybeSingle(),
       ]);
-
-      console.log('[HOME DEBUG] final appt result:', JSON.stringify(appt.data), 'error:', JSON.stringify((appt as any).error));
 
       setPointsBalance((pts.data as any)?.points_balance ?? 0);
       setUpcomingAppt((appt.data as any) ?? null);
