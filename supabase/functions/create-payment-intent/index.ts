@@ -9,7 +9,7 @@
  *   barber_id      : string  (barber whose Stripe account gets charged to)
  *   amount_cents   : number  (amount in cents, e.g. 3500 for $35.00)
  *   currency       : string  (default: "usd")
- *   payment_type   : "online" | "pos"
+ *   payment_type   : "online" | "pos" | "tap_to_pay"
  *   client_id      : string  (optional, for record keeping)
  *   description    : string  (optional, shown on Stripe dashboard)
  *
@@ -30,16 +30,18 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-async function stripePost(path: string, params: Record<string, string | number>) {
+async function stripePost(path: string, params: Record<string, string | number>, stripeAccount?: string) {
   const body = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)])
   ).toString();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+  if (stripeAccount) headers['Stripe-Account'] = stripeAccount;
   const res = await fetch(`https://api.stripe.com/v1${path}`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
+    headers,
     body,
   });
   const data = await res.json();
@@ -67,6 +69,8 @@ Deno.serve(async (req: Request) => {
       payment_type = 'online',
       client_id,
       description,
+      tip_cents = 0,
+      subtotal_cents,
     } = await req.json();
 
     if (!barber_id)    throw new Error('barber_id is required');
@@ -75,8 +79,8 @@ Deno.serve(async (req: Request) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // For POS payments, verify the caller IS the barber (not just any authenticated user)
-    if (payment_type === 'pos') {
+    // For POS / tap_to_pay payments, verify the caller IS the barber or a staff member
+    if (payment_type === 'pos' || payment_type === 'tap_to_pay') {
       const anonClient = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY') ?? '', {
         global: { headers: { Authorization: authHeader } },
       });
@@ -97,8 +101,24 @@ Deno.serve(async (req: Request) => {
         .limit(1)
         .maybeSingle();
 
-      if (!callerProfile || !barberProfile || callerProfile.id !== barberProfile.id) {
+      if (!callerProfile || !barberProfile) {
         throw new Error('Forbidden: POS charges must be initiated by the barber');
+      }
+
+      // Allow if caller IS the barber, or if caller is a team member of the barber
+      if (callerProfile.id !== barberProfile.id) {
+        const { data: teamLink } = await supabase
+          .from('team_members')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('shop_owner_id', barber_id)
+          .eq('is_active', true)
+          .limit(1)
+          .maybeSingle();
+
+        if (!teamLink) {
+          throw new Error('Forbidden: POS charges must be initiated by the barber');
+        }
       }
     }
 
@@ -106,7 +126,7 @@ Deno.serve(async (req: Request) => {
     // barber_id may be auth UID (user_id) or profile id — query both
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('stripe_account_id, stripe_charges_enabled, shop_name, display_name')
+      .select('id, stripe_account_id, stripe_charges_enabled, shop_name, display_name')
       .or(`id.eq.${barber_id},user_id.eq.${barber_id}`)
       .limit(1)
       .maybeSingle();
@@ -126,25 +146,28 @@ Deno.serve(async (req: Request) => {
     const piParams: Record<string, string | number> = {
       amount:                amount_cents,
       currency,
-      'automatic_payment_methods[enabled]': 'true',
       application_fee_amount: platformFeeCents,
-      description:           description ?? `Kutz appointment`,
-      metadata: JSON.stringify({
-        barber_id,
-        client_id:      client_id ?? '',
-        appointment_id: appointment_id ?? '',
-        payment_type,
-      }),
+      description:                   description ?? `Kutz appointment`,
+      'metadata[barber_id]':         barber_id,
+      'metadata[client_id]':         client_id ?? '',
+      'metadata[appointment_id]':    appointment_id ?? '',
+      'metadata[payment_type]':      payment_type,
+      'metadata[tip_cents]':         String(tip_cents ?? 0),
+      'metadata[subtotal_cents]':    String(subtotal_cents ?? amount_cents),
     };
 
-    // For POS: use manual capture so barber confirms before charging
-    if (payment_type === 'pos') {
-      piParams['capture_method'] = 'manual';
+    // Tap to Pay requires card_present; everything else uses automatic_payment_methods
+    if (payment_type === 'tap_to_pay') {
+      piParams['payment_method_types[0]'] = 'card_present';
+      piParams['capture_method'] = 'automatic';
+    } else {
+      piParams['automatic_payment_methods[enabled]'] = 'true';
     }
 
     const pi = await stripePost(
-      `/payment_intents?stripe_account=${profile.stripe_account_id}`,
+      '/payment_intents',
       piParams,
+      profile.stripe_account_id,
     );
 
     // 4. Record the payment in our DB
@@ -152,7 +175,7 @@ Deno.serve(async (req: Request) => {
       .from('payments')
       .insert({
         appointment_id:            appointment_id ?? null,
-        barber_id,
+        barber_id:                 profile.id,
         client_id:                 client_id ?? null,
         amount_cents,
         currency,

@@ -1,13 +1,20 @@
-import React, { useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useCallback, useState } from 'react';
 import { Tabs } from 'expo-router';
-import { LayoutDashboard, CalendarDays, Users, MessageCircle, Settings } from 'lucide-react-native';
+import { LayoutDashboard, CalendarDays, Users, MessageCircle, Settings, Lock } from 'lucide-react-native';
 import {
   Animated, Platform, Pressable, StyleSheet,
   useWindowDimensions, View, Text, PanResponder,
+  ActivityIndicator, TouchableOpacity, Linking,
 } from 'react-native';
 import { useTheme } from '@/lib/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { supabase, SUPABASE_URL } from '@/lib/supabase';
+import { resolveBarberScope } from '@/lib/barber';
+import { StripeTerminalProvider } from '@stripe/stripe-terminal-react-native';
+
+// ── Payments live ────────────────────────────────────────────────────────────
+const PAYMENTS_LIVE = true;
 
 let ExpoBlurView: any = null;
 try { ExpoBlurView = require('expo-blur').BlurView; } catch {}
@@ -190,27 +197,140 @@ function BarberGlassTabBar({ state, navigation }: any) {
   );
 }
 
-export default function BarberLayout() {
+// ── Subscription expired screen ──────────────────────────────────────────────
+
+function SubscriptionExpiredScreen({ isStaff }: { isStaff: boolean }) {
+  const { C } = useTheme();
+  const insets = useSafeAreaInsets();
+
   return (
-    <View style={S.root}>
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarStyle: { display: 'none' },
-          tabBarShowLabel: false,
-        }}
-        tabBar={(props: any) => <BarberGlassTabBar {...props} />}
-      >
-        <Tabs.Screen name="dashboard"    options={{ title: 'Home' }} />
-        <Tabs.Screen name="appointments" options={{ title: 'Schedule' }} />
-        <Tabs.Screen name="clients"      options={{ title: 'Clients' }} />
-        <Tabs.Screen name="messages"     options={{ title: 'Chat' }} />
-        <Tabs.Screen name="settings"     options={{ title: 'Settings' }} />
-        <Tabs.Screen name="charge"       options={{ title: 'Charge', href: null }} />
-      </Tabs>
+    <View style={[SS.root, { backgroundColor: C.bg, paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+      <View style={[SS.iconWrap, { backgroundColor: C.accent + '15' }]}>
+        <Lock color={C.accent} size={38} strokeWidth={1.8} />
+      </View>
+      <Text style={[SS.heading, { color: C.text }]}>Subscription Inactive</Text>
+      <Text style={[SS.body, { color: C.text2 }]}>
+        {isStaff
+          ? "Your shop's Kutz subscription has expired.\nContact your shop owner to restore access."
+          : "Your Kutz subscription has expired.\nRenew to get back to work."
+        }
+      </Text>
+      {!isStaff && (
+        <TouchableOpacity
+          onPress={() => Linking.openURL('https://kutz.io/subscribe')}
+          style={[SS.btn, { backgroundColor: C.accent }]}
+          activeOpacity={0.85}
+        >
+          <Text style={SS.btnTxt}>Renew Now</Text>
+        </TouchableOpacity>
+      )}
+      <Text style={[SS.hint, { color: C.text3 }]}>
+        Already renewed? Restart the app to refresh.
+      </Text>
     </View>
   );
 }
+
+// ── Layout ────────────────────────────────────────────────────────────────────
+
+type SubState = 'loading' | 'active' | 'inactive' | 'staff_inactive';
+
+export default function BarberLayout() {
+  const [subState, setSubState] = useState<SubState>('loading');
+  const [ownerUid, setOwnerUid] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      // Gate is off — skip the DB check entirely
+      if (!PAYMENTS_LIVE) { setSubState('active'); return; }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) { setSubState('active'); return; }
+
+      const { ownerUid: uid, isStaff } = await resolveBarberScope(session.user.id);
+      setOwnerUid(uid);
+
+      const { data } = await supabase
+        .from('profiles')
+        .select('subscription_status')
+        .or(`id.eq.${uid},user_id.eq.${uid}`)
+        .limit(1)
+        .maybeSingle();
+
+      const status = (data as any)?.subscription_status as string | undefined;
+      const active = status === 'active' || status === 'trialing';
+
+      if (!active) {
+        setSubState(isStaff ? 'staff_inactive' : 'inactive');
+      } else {
+        setSubState('active');
+      }
+    })();
+  }, []);
+
+  // Stripe Terminal: fetch connection token scoped to barber's connected account
+  const fetchTokenProvider = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session || !ownerUid) throw new Error('Not authenticated');
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/create-connection-token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ barber_id: ownerUid }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'Token fetch failed');
+    return data.secret;
+  }, [ownerUid]);
+
+  if (subState === 'loading') {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0a0a0a' }}>
+        <ActivityIndicator color="#a855f7" size="large" />
+      </View>
+    );
+  }
+
+  if (subState === 'inactive' || subState === 'staff_inactive') {
+    return <SubscriptionExpiredScreen isStaff={subState === 'staff_inactive'} />;
+  }
+
+  return (
+    <View style={S.root}>
+      <StripeTerminalProvider tokenProvider={fetchTokenProvider}>
+        <Tabs
+          screenOptions={{
+            headerShown: false,
+            tabBarStyle: { display: 'none' },
+            tabBarShowLabel: false,
+          }}
+          tabBar={(props: any) => <BarberGlassTabBar {...props} />}
+        >
+          <Tabs.Screen name="dashboard"    options={{ title: 'Home' }} />
+          <Tabs.Screen name="appointments" options={{ title: 'Schedule' }} />
+          <Tabs.Screen name="clients"      options={{ title: 'Clients' }} />
+          <Tabs.Screen name="messages"     options={{ title: 'Chat' }} />
+          <Tabs.Screen name="settings"     options={{ title: 'Settings' }} />
+          <Tabs.Screen name="charge"       options={{ title: 'Charge', href: null }} />
+          <Tabs.Screen name="profile"      options={{ title: 'Profile', href: null }} />
+        </Tabs>
+      </StripeTerminalProvider>
+    </View>
+  );
+}
+
+const SS = StyleSheet.create({
+  root:    { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
+  iconWrap:{ width: 88, height: 88, borderRadius: 44, alignItems: 'center', justifyContent: 'center', marginBottom: 28 },
+  heading: { fontSize: 26, fontWeight: '900', textAlign: 'center', letterSpacing: -0.5, marginBottom: 14 },
+  body:    { fontSize: 15, textAlign: 'center', lineHeight: 23, marginBottom: 36 },
+  btn:     { paddingHorizontal: 40, paddingVertical: 17, borderRadius: 18, marginBottom: 20 },
+  btnTxt:  { fontSize: 16, fontWeight: '800', color: '#fff', letterSpacing: 0.2 },
+  hint:    { fontSize: 12, textAlign: 'center' },
+});
 
 const S = StyleSheet.create({
   root: { flex: 1 },

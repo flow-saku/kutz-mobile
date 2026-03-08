@@ -1,21 +1,30 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
-  RefreshControl, Alert, Animated, StyleSheet, StatusBar,
+  RefreshControl, Alert, Animated, StyleSheet, StatusBar, Pressable,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Scissors, DollarSign, Users, CalendarCheck, Clock,
   ChevronRight, TrendingUp, Check, X, AlertCircle, MessageCircle, CreditCard,
-  Smartphone, Globe, CheckCircle2, Timer, UserCircle2,
+  Smartphone, Globe, CheckCircle2, Timer, UserCircle2, Flame, Target,
+  Play, Bell, User,
 } from 'lucide-react-native';
+import { Swipeable } from 'react-native-gesture-handler';
+import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { resolveBarberScope } from '@/lib/barber';
 import { useTheme } from '@/lib/theme';
-import { format, startOfWeek } from 'date-fns';
+import { format, startOfWeek, subDays, addDays, isToday, isSameDay } from 'date-fns';
 import * as Haptics from 'expo-haptics';
+import AnimatedCounter from '@/components/ui/AnimatedCounter';
+import ConfettiPop from '@/components/ui/ConfettiPop';
+import ProgressRing from '@/components/ui/ProgressRing';
+import { useToast } from '@/lib/toast';
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function fmt12(t: string) {
   try {
     const [h, m] = t.split(':').map(Number);
@@ -31,32 +40,127 @@ function avatarColor(name: string) {
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffffffff;
   return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
 }
+function elapsedSince(timeStr: string): string {
+  try {
+    const [h, m] = timeStr.split(':').map(Number);
+    const now = new Date();
+    const mins = (now.getHours() * 60 + now.getMinutes()) - (h * 60 + m);
+    if (mins < 1) return 'Just started';
+    if (mins < 60) return `${mins}m`;
+    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  } catch { return ''; }
+}
 
 const TAB_BAR_HEIGHT = 68;
+const DAY_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const green = '#16a34a', blue = '#2563eb', yellow = '#d97706', red = '#dc2626', orange = '#f97316';
+const stripeColor = '#635bff';
 
+// ── Pressable with spring ───────────────────────────────────────────────────
+function Tap({ onPress, style, children, disabled = false }: any) {
+  const scale = useRef(new Animated.Value(1)).current;
+  return (
+    <Pressable
+      disabled={disabled}
+      onPressIn={() => {
+        Animated.spring(scale, { toValue: 0.96, useNativeDriver: true, tension: 500, friction: 28 }).start();
+      }}
+      onPressOut={() => Animated.spring(scale, { toValue: 1, useNativeDriver: true, tension: 400, friction: 26 }).start()}
+      onPress={onPress}
+    >
+      <Animated.View style={[style, { transform: [{ scale }] }]}>{children}</Animated.View>
+    </Pressable>
+  );
+}
+
+// ── Big CTA Button with spring ──────────────────────────────────────────────
+function BigCTA({ onPress, label, sub, color, icon, disabled = false }: {
+  onPress: () => void; label: string; sub?: string; color: string;
+  icon: React.ReactNode; disabled?: boolean;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+  return (
+    <Pressable
+      disabled={disabled}
+      onPressIn={() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        Animated.spring(scale, { toValue: 0.97, useNativeDriver: true, tension: 400, friction: 20 }).start();
+      }}
+      onPressOut={() => Animated.spring(scale, { toValue: 1, useNativeDriver: true, tension: 300, friction: 14 }).start()}
+      onPress={onPress}
+    >
+      <Animated.View style={[S.bigCTA, { backgroundColor: color, transform: [{ scale }] }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={S.bigCTALabel}>{label}</Text>
+          {sub && <Text style={S.bigCTASub}>{sub}</Text>}
+        </View>
+        <View style={S.bigCTAIcon}>{icon}</View>
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+// ── Main Component ───────────────────────────────────────────────────────────
 export default function BarberDashboard() {
   const { C, theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const tabBarClearance = TAB_BAR_HEIGHT + Math.max(16, insets.bottom + 8) + 16;
 
-  const [loading, setLoading]           = useState(true);
-  const [refreshing, setRefreshing]     = useState(false);
-  const [scopeIds, setScopeIds]         = useState<string[]>([]);
-  const [primaryId, setPrimaryId]       = useState<string | null>(null);
-  const [shopName, setShopName]         = useState('My Shop');
-  const [isOwner, setIsOwner]           = useState(false);
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [loading, setLoading]             = useState(true);
+  const [refreshing, setRefreshing]       = useState(false);
+  const [scopeIds, setScopeIds]           = useState<string[]>([]);
+  const [primaryId, setPrimaryId]         = useState<string | null>(null);
+  const [shopName, setShopName]           = useState('My Shop');
+  const [isOwner, setIsOwner]             = useState(false);
   const [staffMemberId, setStaffMemberId] = useState<string | null>(null);
-  const [todayApts, setTodayApts]       = useState<any[]>([]);
-  const [staffMap, setStaffMap]         = useState<Record<string, string>>({});
-  const [pendingCount, setPendingCount] = useState(0);
-  const [todayRevenue, setTodayRevenue] = useState(0);
-  const [weekRevenue, setWeekRevenue]   = useState(0);
-  const [totalClients, setTotalClients] = useState(0);
-  const [updatingId, setUpdatingId]     = useState<string | null>(null);
+  const [todayApts, setTodayApts]         = useState<any[]>([]);
+  const [staffMap, setStaffMap]           = useState<Record<string, string>>({});
+  const [pendingCount, setPendingCount]   = useState(0);
+  const [todayRevenue, setTodayRevenue]   = useState(0);
+  const [weekRevenue, setWeekRevenue]     = useState(0);
+  const [totalClients, setTotalClients]   = useState(0);
+  const [updatingId, setUpdatingId]       = useState<string | null>(null);
+  const [dailyGoal, setDailyGoal]         = useState<number | null>(null);
+  const [dayStreak, setDayStreak]         = useState(0);
+  const [timerTick, setTimerTick]         = useState(0);
+  const [weekActivity, setWeekActivity]   = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
+
+  // Celebration overlay
+  const [celebration, setCelebration] = useState<{ name: string; amount: number } | null>(null);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const celebScale = useRef(new Animated.Value(0)).current;
+  const celebOpacity = useRef(new Animated.Value(0)).current;
+
+  // Milestone tracking
+  const prevRevRef = useRef(0);
+  const prevCompletedRef = useRef(0);
 
   const fadeAnim  = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(16)).current;
   const scopeRef  = useRef<string[]>([]);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Session start animation
+  const sessionStartScale = useRef(new Animated.Value(1)).current;
+  const sessionStartGlow = useRef(new Animated.Value(0)).current;
+
+  // In-chair pulsing dot
+  useEffect(() => {
+    const pulse = Animated.loop(Animated.sequence([
+      Animated.timing(pulseAnim, { toValue: 0.3, duration: 900, useNativeDriver: true }),
+      Animated.timing(pulseAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
+    ]));
+    pulse.start();
+    return () => pulse.stop();
+  }, []);
+
+  // Live timer tick (every 30s)
+  useEffect(() => {
+    const iv = setInterval(() => setTimerTick(t => t + 1), 30000);
+    return () => clearInterval(iv);
+  }, []);
 
   function animateIn() {
     Animated.parallel([
@@ -65,15 +169,14 @@ export default function BarberDashboard() {
     ]).start();
   }
 
+  // ── Data Fetching ──────────────────────────────────────────────────────────
   async function loadStaffNames(ownerUid: string) {
     try {
-      // Try the same RPC the client booking screen uses
       const { data } = await supabase.rpc('get_all_shop_staff', { p_barber_id: ownerUid });
       const map: Record<string, string> = {};
       for (const tm of ((data as any[]) ?? [])) {
         if (tm.id) map[tm.id] = tm.display_name ?? tm.name ?? 'Unknown';
       }
-      // Also include owner under their UID
       if (!map[ownerUid]) {
         const { data: p } = await supabase.from('profiles')
           .select('display_name, shop_name').eq('id', ownerUid).maybeSingle();
@@ -83,22 +186,54 @@ export default function BarberDashboard() {
     } catch { /* non-critical */ }
   }
 
+  async function fetchStreak(ids: string[], tmId?: string | null) {
+    try {
+      let streak = 0;
+      for (let d = 1; d <= 30; d++) {
+        const dateStr = format(subDays(new Date(), d), 'yyyy-MM-dd');
+        let q = supabase.from('appointments')
+          .select('id', { count: 'exact', head: true })
+          .in('barber_id', ids).eq('date', dateStr).eq('status', 'completed');
+        if (tmId) q = q.eq('team_member_id', tmId) as any;
+        const { count } = await q;
+        if ((count ?? 0) > 0) streak++;
+        else break;
+      }
+      setDayStreak(streak);
+    } catch { /* non-critical */ }
+  }
+
+  async function fetchWeekActivity(ids: string[], tmId?: string | null) {
+    try {
+      const now = new Date();
+      const ws = startOfWeek(now);
+      const counts: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        const dateStr = format(addDays(ws, i), 'yyyy-MM-dd');
+        let q = supabase.from('appointments')
+          .select('id', { count: 'exact', head: true })
+          .in('barber_id', ids).eq('date', dateStr)
+          .not('status', 'eq', 'cancelled');
+        if (tmId) q = q.eq('team_member_id', tmId) as any;
+        const { count } = await q;
+        counts.push(count ?? 0);
+      }
+      setWeekActivity(counts);
+    } catch { /* non-critical */ }
+  }
+
   async function fetchData(ids: string[], uid: string, tmId?: string | null) {
     try {
       const now = new Date();
       const today = format(now, 'yyyy-MM-dd');
       const weekStartStr = format(startOfWeek(now), 'yyyy-MM-dd');
 
-      // Run every query independently so one failure doesn't kill the rest
       const profileRes = await supabase.from('profiles').select('display_name, shop_name')
         .or(`id.eq.${uid},user_id.eq.${uid}`).limit(1).maybeSingle();
 
-      // Staff barbers: filter to their own appointments via team_member_id
       let todayQ = supabase.from('appointments')
         .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_id, payment_method, services(name)')
-        .in('barber_id', ids)
-        .eq('date', today)
-        .order('start_time', { ascending: true });
+        .in('barber_id', ids).eq('date', today).order('start_time', { ascending: true });
       if (tmId) todayQ = (todayQ as any).eq('team_member_id', tmId);
       const todayRes = await todayQ;
 
@@ -114,8 +249,6 @@ export default function BarberDashboard() {
       setShopName((profileRes.data as any)?.shop_name || (profileRes.data as any)?.display_name || 'My Shop');
 
       const rawApts = (todayRes.data as any[]) ?? [];
-
-      // Fetch payment types for paid badge display
       const paymentIds = rawApts.map(a => a.payment_id).filter(Boolean);
       let paymentMap: Record<string, string> = {};
       if (paymentIds.length > 0) {
@@ -131,21 +264,52 @@ export default function BarberDashboard() {
         payment_type: a.payment_id ? (paymentMap[a.payment_id] || 'online') : null,
       }));
 
+      const newRevenue = apts.filter((a: any) => a.status === 'completed').reduce((s: number, a: any) => s + (a.price || 0), 0);
+      const newCompleted = apts.filter((a: any) => a.status === 'completed').length;
+
+      // Milestone checks
+      const prev = prevRevRef.current;
+      const prevC = prevCompletedRef.current;
+      if (prev > 0) {
+        if (newRevenue >= 100 && prev < 100)  { toast.success('$100 day! 💪');  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }
+        if (newRevenue >= 500 && prev < 500)  { toast.success('$500 day! 🔥');  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }
+        if (newRevenue >= 1000 && prev < 1000){ toast.success('$1,000 day! 👑'); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }
+        if (newCompleted >= 5 && prevC < 5)   { toast.success('5 clients served!'); }
+        if (newCompleted >= 10 && prevC < 10) { toast.success('10 clients! Machine mode'); }
+      }
+      prevRevRef.current = newRevenue;
+      prevCompletedRef.current = newCompleted;
+
       setTodayApts(apts);
       setPendingCount(apts.filter((a: any) => a.status === 'pending').length);
-      setTodayRevenue(apts.filter((a: any) => a.status === 'completed').reduce((s: number, a: any) => s + (a.price || 0), 0));
+      setTodayRevenue(newRevenue);
       setWeekRevenue(((weekRes.data as any[]) ?? []).reduce((s, a) => s + (a.price_charged || 0), 0));
       setTotalClients(clientCountRes.count ?? 0);
     } catch (err) { console.error('Dashboard fetchData error:', err); }
   }
 
-  // ── Init ─────────────────────────────────────────────────────────────────
+  async function fetchDailyGoal(ownerUid: string, tmId?: string | null, isStaff?: boolean) {
+    try {
+      if (isStaff && tmId) {
+        const { data } = await supabase.from('team_members')
+          .select('daily_revenue_goal').eq('id', tmId).maybeSingle();
+        if ((data as any)?.daily_revenue_goal) setDailyGoal(Number((data as any).daily_revenue_goal));
+      } else {
+        const { data } = await supabase.from('profiles')
+          .select('monthly_revenue_goal')
+          .or(`id.eq.${ownerUid},user_id.eq.${ownerUid}`).maybeSingle();
+        const monthly = (data as any)?.monthly_revenue_goal;
+        if (monthly && Number(monthly) > 0) setDailyGoal(Math.round(Number(monthly) / 22));
+      }
+    } catch { /* non-critical */ }
+  }
+
+  // ── Init ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) { setLoading(false); router.replace('/(auth)/login'); return; }
       const uid = session.user.id;
-
       const scope = await resolveBarberScope(uid);
       const { scopeIds: ids, ownerUid, staffMemberId: tmId, shopName: sName, isStaff } = scope;
 
@@ -157,20 +321,30 @@ export default function BarberDashboard() {
       setIsOwner(!isStaff);
 
       await fetchData(ids, ownerUid, tmId);
-      loadStaffNames(ownerUid); // non-blocking
+      loadStaffNames(ownerUid);
+      fetchDailyGoal(ownerUid, tmId, isStaff);
+      fetchStreak(ids, tmId);
+      fetchWeekActivity(ids, tmId);
 
       setLoading(false);
       animateIn();
     })();
   }, []);
 
-  // ── Real-time ─────────────────────────────────────────────────────────────
+  // ── Real-time ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!scopeIds.length) return;
     const ch = supabase.channel('barber_dash_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments',
         filter: `barber_id=eq.${scopeIds[0]}` },
-        () => { if (scopeRef.current.length) fetchData(scopeRef.current, scopeIds[0], staffMemberId); })
+        (payload: any) => {
+          if (!scopeRef.current.length) return;
+          if (payload.eventType === 'INSERT' && payload.new?.status === 'pending') {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            Notifications.setBadgeCountAsync(1).catch(() => {});
+          }
+          fetchData(scopeRef.current, scopeIds[0], staffMemberId);
+        })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [scopeIds]);
@@ -179,22 +353,106 @@ export default function BarberDashboard() {
     setRefreshing(true);
     if (scopeRef.current.length && primaryId) {
       await fetchData(scopeRef.current, primaryId, staffMemberId);
+      fetchWeekActivity(scopeRef.current, staffMemberId);
     }
     setRefreshing(false);
   }, [primaryId, staffMemberId]);
 
+  // ── Status Update with Celebrations ────────────────────────────────────────
   const updateStatus = async (aptId: string, newStatus: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setUpdatingId(aptId);
     try {
+      if (newStatus === 'confirmed') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      else if (newStatus === 'in_chair') {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        // Session start animation
+        Animated.sequence([
+          Animated.spring(sessionStartScale, { toValue: 1.03, tension: 500, friction: 10, useNativeDriver: true }),
+          Animated.spring(sessionStartScale, { toValue: 1, tension: 200, friction: 12, useNativeDriver: true }),
+        ]).start();
+      }
+      else if (newStatus === 'completed') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      else if (newStatus === 'cancelled') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+
       const { error } = await supabase.from('appointments').update({ status: newStatus }).eq('id', aptId);
       if (error) throw error;
+
+      if (newStatus === 'completed') {
+        const apt = todayApts.find(a => a.id === aptId);
+        if (apt) fireCelebration(apt.client_name || 'Client', Number(apt.price) || 0);
+      }
+
       if (scopeRef.current.length && primaryId) await fetchData(scopeRef.current, primaryId, staffMemberId);
     } catch (err: any) { Alert.alert('Error', err.message || 'Failed to update'); }
     setUpdatingId(null);
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Celebration Overlay ────────────────────────────────────────────────────
+  const fireCelebration = (name: string, amount: number) => {
+    setCelebration({ name, amount });
+    setShowConfetti(false);
+    celebScale.setValue(0);
+    celebOpacity.setValue(0);
+
+    Animated.parallel([
+      Animated.spring(celebScale, { toValue: 1, tension: 180, friction: 10, useNativeDriver: true }),
+      Animated.timing(celebOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+    ]).start(() => {
+      setTimeout(() => setShowConfetti(true), 100);
+    });
+
+    setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(celebOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+        Animated.timing(celebScale, { toValue: 0.8, duration: 300, useNativeDriver: true }),
+      ]).start(() => { setCelebration(null); setShowConfetti(false); });
+    }, 2500);
+  };
+
+  const dismissCelebration = () => {
+    Animated.parallel([
+      Animated.timing(celebOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(celebScale, { toValue: 0.8, duration: 200, useNativeDriver: true }),
+    ]).start(() => { setCelebration(null); setShowConfetti(false); });
+  };
+
+  // ── Swipe Actions ──────────────────────────────────────────────────────────
+  const renderSwipeRight = (status: string, aptId: string) => {
+    const configs: Record<string, { bg: string; label: string; newStatus: string }> = {
+      pending:   { bg: green,  label: 'Confirm',  newStatus: 'confirmed' },
+      confirmed: { bg: orange, label: 'Start',    newStatus: 'in_chair' },
+      in_chair:  { bg: green,  label: 'Complete', newStatus: 'completed' },
+    };
+    const cfg = configs[status];
+    if (!cfg) return undefined;
+    return () => (
+      <TouchableOpacity
+        onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); updateStatus(aptId, cfg.newStatus); }}
+        style={[S.swipeAction, { backgroundColor: cfg.bg }]} activeOpacity={0.85}>
+        <Text style={S.swipeActionText}>{cfg.label}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderSwipeLeft = (status: string, aptId: string) => {
+    if (status !== 'pending' && status !== 'confirmed') return undefined;
+    const label = status === 'pending' ? 'Decline' : 'Cancel';
+    return () => (
+      <TouchableOpacity
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          Alert.alert(label, `${label} this appointment?`, [
+            { text: 'Keep', style: 'cancel' },
+            { text: label, style: 'destructive', onPress: () => updateStatus(aptId, 'cancelled') },
+          ]);
+        }}
+        style={[S.swipeAction, { backgroundColor: red }]} activeOpacity={0.85}>
+        <Text style={S.swipeActionText}>{label}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   if (loading) return (
     <View style={[S.loader, { backgroundColor: C.bg }]}>
       <ActivityIndicator color={C.accent} size="large" />
@@ -202,224 +460,186 @@ export default function BarberDashboard() {
   );
 
   const completedToday = todayApts.filter(a => a.status === 'completed').length;
-  const inChairToday   = todayApts.filter(a => a.status === 'in_chair').length;
-  const green = '#16a34a', blue = '#2563eb', yellow = '#d97706', red = '#dc2626', orange = '#f97316';
-  const stripeColor = '#635bff';
+  const inChairApts    = todayApts.filter(a => a.status === 'in_chair');
+  const confirmedApts  = todayApts.filter(a => a.status === 'confirmed');
+  const pendingApts    = todayApts.filter(a => a.status === 'pending');
+  const goalPct = dailyGoal && dailyGoal > 0 ? Math.min((todayRevenue / dailyGoal) * 100, 100) : 0;
+  const goalReached = dailyGoal ? todayRevenue >= dailyGoal : false;
 
-  const STATUS: Record<string, { label: string; color: string }> = {
-    pending:   { label: 'Pending',   color: yellow },
-    confirmed: { label: 'Confirmed', color: C.accent },
-    in_chair:  { label: 'In Chair',  color: orange },
-    completed: { label: 'Done',      color: green },
-    cancelled: { label: 'Cancelled', color: C.text3 },
-  };
+  // Next actionable appointment
+  const nextUp = inChairApts[0] || confirmedApts[0] || pendingApts[0] || null;
+
+  // Week strip dates
+  const now = new Date();
+  const ws = startOfWeek(now);
+  const weekDates = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+  const maxActivity = Math.max(...weekActivity, 1);
 
   const renderAppointment = (apt: any) => {
-    const cfg    = STATUS[apt.status] || STATUS.pending;
-    const aColor = avatarColor(apt.client_name || 'C');
+    const isActive = apt.status === 'in_chair';
+    const isDone   = apt.status === 'completed';
+    const isCancel = apt.status === 'cancelled';
+    const aColor   = avatarColor(apt.client_name || 'C');
     const isUpdating = updatingId === apt.id;
     const isPOS    = apt.payment_type === 'pos';
     const isOnline = apt.payment_type === 'online';
-    const isActive = apt.status === 'in_chair';
-    const isDone   = apt.status === 'completed';
+    const assignedStaffName = apt.team_member_id ? (staffMap[apt.team_member_id] ?? null) : null;
 
-    // Who is doing this appointment
-    const assignedStaffName = apt.team_member_id
-      ? (staffMap[apt.team_member_id] ?? null)
-      : null;
+    const statusColor = isActive ? orange : isDone ? green : apt.status === 'pending' ? yellow : C.text3;
 
-    return (
-      <View
-        key={apt.id}
-        style={[S.aptCard, {
-          backgroundColor: C.card,
-          borderColor: isActive ? `${orange}45` : isDone ? `${green}30` : C.cardBorder,
-          borderWidth: isActive ? 1.5 : 1,
-        }]}
-      >
-        {/* Left accent bar */}
-        <View style={[S.accentBar, { backgroundColor: cfg.color }]} />
-
-        <View style={{ flex: 1, paddingLeft: 14 }}>
-          {/* Time + status row */}
-          <View style={S.aptTopRow}>
-            <View style={S.timeChip}>
-              <Clock color={cfg.color} size={12} strokeWidth={2.5} />
-              <Text style={[S.timeText, { color: cfg.color }]}>
-                {fmt12(apt.start_time)}
-              </Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {apt.price > 0 && (
-                <Text style={[S.priceText, { color: green }]}>${apt.price}</Text>
-              )}
-              <View style={[S.statusPill, { backgroundColor: cfg.color + '1a' }]}>
-                <Text style={[S.statusPillText, { color: cfg.color }]}>{cfg.label}</Text>
+    const card = (
+      <View style={[S.aptCard, {
+        backgroundColor: C.card,
+        borderColor: isActive ? `${orange}40` : isDone ? `${green}25` : C.cardBorder,
+      }]}>
+        {/* Time + Status row */}
+        <View style={S.aptHeader}>
+          <View style={S.aptTimeRow}>
+            <View style={[S.timeDot, { backgroundColor: statusColor }]} />
+            <Text style={[S.aptTime, { color: C.text2 }]}>{fmt12(apt.start_time)}</Text>
+            {isActive && (
+              <View style={[S.liveChip, { backgroundColor: `${orange}15` }]}>
+                <Animated.View style={[S.liveDotSmall, { backgroundColor: orange, opacity: pulseAnim }]} />
+                <Text style={[S.liveText, { color: orange }]}>{elapsedSince(apt.start_time)}</Text>
               </View>
-            </View>
+            )}
           </View>
-
-          {/* Client row */}
-          <View style={S.clientRow}>
-            <View style={[S.avatar, { backgroundColor: aColor + '20' }]}>
-              <Text style={[S.avatarTxt, { color: aColor }]}>{initials(apt.client_name || 'C')}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <Text style={[S.aptName, { color: C.text }]} numberOfLines={1}>{apt.client_name}</Text>
-                {apt.paid && isPOS && (
-                  <View style={[S.payBadge, { backgroundColor: stripeColor + '18' }]}>
-                    <Smartphone color={stripeColor} size={9} />
-                    <Text style={[S.payBadgeText, { color: stripeColor }]}>POS</Text>
-                  </View>
-                )}
-                {apt.paid && isOnline && (
-                  <View style={[S.payBadge, { backgroundColor: green + '18' }]}>
-                    <Globe color={green} size={9} />
-                    <Text style={[S.payBadgeText, { color: green }]}>Online</Text>
-                  </View>
-                )}
-                {!apt.paid && isDone && (
-                  <View style={[S.payBadge, { backgroundColor: yellow + '18' }]}>
-                    <Text style={[S.payBadgeText, { color: yellow }]}>Unpaid</Text>
-                  </View>
-                )}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {apt.price > 0 && <Text style={[S.aptPrice, { color: green }]}>${apt.price}</Text>}
+            {apt.paid && (
+              <View style={[S.paidChip, { backgroundColor: `${green}12` }]}>
+                <CheckCircle2 color={green} size={10} />
+                <Text style={[S.paidChipText, { color: green }]}>Paid</Text>
               </View>
-
-              {/* Service + assigned barber */}
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3, flexWrap: 'wrap' }}>
-                {!!apt.service_name && (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-                    <Scissors color={C.text3} size={10} strokeWidth={2} />
-                    <Text style={[S.metaText, { color: C.text3 }]} numberOfLines={1}>{apt.service_name}</Text>
-                  </View>
-                )}
-                {!!assignedStaffName && (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-                    <UserCircle2 color={C.accent} size={10} strokeWidth={2} />
-                    <Text style={[S.metaText, { color: C.accent }]}>{assignedStaffName}</Text>
-                  </View>
-                )}
-              </View>
-            </View>
+            )}
           </View>
-
-          {/* Actions */}
-          {isUpdating ? (
-            <View style={[S.actionRow, { justifyContent: 'center', paddingVertical: 8 }]}>
-              <ActivityIndicator size="small" color={C.accent} />
-            </View>
-          ) : (
-            <>
-              {apt.status === 'pending' && (
-                <View style={S.actionRow}>
-                  <TouchableOpacity
-                    onPress={() => updateStatus(apt.id, 'confirmed')}
-                    activeOpacity={0.75}
-                    style={[S.actionBtn, { backgroundColor: green, flex: 1 }]}
-                  >
-                    <Check color="#fff" size={14} strokeWidth={2.5} />
-                    <Text style={S.actionBtnTxt}>Confirm</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => Alert.alert('Decline', 'Decline this booking?', [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Decline', style: 'destructive', onPress: () => updateStatus(apt.id, 'cancelled') },
-                    ])}
-                    activeOpacity={0.75}
-                    style={[S.actionIconBtn, { backgroundColor: red + '15', borderColor: red + '30', borderWidth: 1 }]}
-                  >
-                    <X color={red} size={16} strokeWidth={2.5} />
-                  </TouchableOpacity>
-                </View>
-              )}
-
-              {apt.status === 'confirmed' && (
-                <View style={S.actionRow}>
-                  <TouchableOpacity
-                    onPress={() => updateStatus(apt.id, 'in_chair')}
-                    activeOpacity={0.75}
-                    style={[S.actionBtn, { backgroundColor: orange, flex: 1 }]}
-                  >
-                    <Text style={S.actionBtnTxt}>▶  Start Session</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => Alert.alert('Cancel Appointment', 'Cancel this appointment?', [
-                      { text: 'Keep', style: 'cancel' },
-                      { text: 'Cancel', style: 'destructive', onPress: () => updateStatus(apt.id, 'cancelled') },
-                    ])}
-                    activeOpacity={0.75}
-                    style={[S.actionIconBtn, { backgroundColor: red + '12', borderColor: red + '25', borderWidth: 1 }]}
-                  >
-                    <X color={red} size={16} strokeWidth={2.5} />
-                  </TouchableOpacity>
-                </View>
-              )}
-
-              {apt.status === 'in_chair' && (() => {
-                const paysAtShop = apt.payment_method === 'at_shop' || !apt.payment_method;
-                const needsCharge = paysAtShop && !apt.paid && Number(apt.price) > 0;
-                return (
-                  <View style={S.actionRow}>
-                    <TouchableOpacity
-                      onPress={async () => {
-                        await updateStatus(apt.id, 'completed');
-                        // Auto-open charge screen for in-person payers
-                        if (needsCharge) {
-                          router.push({
-                            pathname: '/(barber)/charge',
-                            params: {
-                              client_name: apt.client_name,
-                              client_id: apt.client_id || '',
-                              appointment_id: apt.id,
-                              prefill_amount: String(apt.price),
-                            },
-                          });
-                        }
-                      }}
-                      activeOpacity={0.75}
-                      style={[S.actionBtn, { backgroundColor: needsCharge ? stripeColor : green, flex: 1 }]}
-                    >
-                      {needsCharge
-                        ? <><CreditCard color="#fff" size={14} strokeWidth={2.5} /><Text style={S.actionBtnTxt}>Complete & Charge ${apt.price}</Text></>
-                        : <><CheckCircle2 color="#fff" size={14} strokeWidth={2.2} /><Text style={S.actionBtnTxt}>Complete</Text></>
-                      }
-                    </TouchableOpacity>
-                    {apt.paid && (
-                      <View style={[S.actionBtn, { backgroundColor: green + '18', flex: 1 }]}>
-                        <CheckCircle2 color={green} size={14} strokeWidth={2.2} />
-                        <Text style={[S.actionBtnTxt, { color: green }]}>Paid ✓</Text>
-                      </View>
-                    )}
-                  </View>
-                );
-              })()}
-
-              {apt.status === 'completed' && apt.paid && (
-                <View style={[S.paidRow, { backgroundColor: green + '10', borderColor: green + '25' }]}>
-                  <CheckCircle2 color={green} size={12} strokeWidth={2.2} />
-                  <Text style={[S.paidTxt, { color: green }]}>Payment received</Text>
-                </View>
-              )}
-            </>
-          )}
         </View>
+
+        {/* Client */}
+        <View style={S.aptClient}>
+          <View style={[S.aptAvatar, { backgroundColor: `${aColor}15` }]}>
+            <Text style={[S.aptAvatarTxt, { color: aColor }]}>{initials(apt.client_name || 'C')}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[S.aptName, { color: C.text }]} numberOfLines={1}>{apt.client_name || 'Client'}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
+              {!!apt.service_name && (
+                <Text style={[S.aptMeta, { color: C.text3 }]}>{apt.service_name}</Text>
+              )}
+              {!!assignedStaffName && (
+                <Text style={[S.aptMeta, { color: C.accent }]}>{assignedStaffName}</Text>
+              )}
+            </View>
+          </View>
+        </View>
+
+        {/* Actions */}
+        {isUpdating ? (
+          <View style={{ paddingVertical: 6, alignItems: 'center' }}>
+            <ActivityIndicator size="small" color={C.accent} />
+          </View>
+        ) : (
+          <>
+            {apt.status === 'pending' && (
+              <View style={S.aptActions}>
+                <Tap onPress={() => updateStatus(apt.id, 'confirmed')}
+                  style={[S.aptBtn, { backgroundColor: green, flex: 1 }]}>
+                  <Check color="#fff" size={14} strokeWidth={2.5} />
+                  <Text style={S.aptBtnTxt}>Confirm</Text>
+                </Tap>
+                <Tap onPress={() => Alert.alert('Decline', 'Decline this booking?', [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Decline', style: 'destructive', onPress: () => updateStatus(apt.id, 'cancelled') },
+                ])}
+                  style={[S.aptBtnSmall, { backgroundColor: `${red}10`, borderColor: `${red}25` }]}>
+                  <X color={red} size={15} />
+                </Tap>
+              </View>
+            )}
+
+            {apt.status === 'confirmed' && (
+              <View style={S.aptActions}>
+                <Tap onPress={() => updateStatus(apt.id, 'in_chair')}
+                  style={[S.aptBtn, { backgroundColor: C.accent, flex: 1 }]}>
+                  <Play color="#fff" size={13} strokeWidth={2.5} />
+                  <Text style={S.aptBtnTxt}>Start Session</Text>
+                </Tap>
+              </View>
+            )}
+
+            {apt.status === 'in_chair' && (() => {
+              const paysAtShop = apt.payment_method === 'at_shop' || !apt.payment_method;
+              const needsCharge = paysAtShop && !apt.paid;
+              return (
+                <View style={S.aptActions}>
+                  <Tap onPress={async () => {
+                    await updateStatus(apt.id, 'completed');
+                    if (needsCharge) {
+                      router.push({
+                        pathname: '/(barber)/charge',
+                        params: { client_name: apt.client_name, client_id: apt.client_id || '', appointment_id: apt.id, prefill_amount: String(apt.price) },
+                      });
+                    }
+                  }} style={[S.aptBtn, { backgroundColor: needsCharge ? stripeColor : green, flex: 1 }]}>
+                    {needsCharge
+                      ? <><CreditCard color="#fff" size={14} /><Text style={S.aptBtnTxt}>{Number(apt.price) > 0 ? `Complete & Charge $${apt.price}` : 'Complete & Charge'}</Text></>
+                      : <><CheckCircle2 color="#fff" size={14} /><Text style={S.aptBtnTxt}>Complete</Text></>}
+                  </Tap>
+                </View>
+              );
+            })()}
+
+            {apt.status === 'completed' && !apt.paid && (() => {
+              const paysAtShop = apt.payment_method === 'at_shop' || !apt.payment_method;
+              if (!paysAtShop) return null;
+              return (
+                <Tap onPress={() => router.push({
+                  pathname: '/(barber)/charge',
+                  params: { client_name: apt.client_name ?? '', client_id: apt.client_id ?? '', appointment_id: apt.id, prefill_amount: String(Number(apt.price).toFixed(2)) },
+                })} style={[S.aptBtn, { backgroundColor: stripeColor, marginTop: 4 }]}>
+                  <CreditCard color="#fff" size={14} />
+                  <Text style={S.aptBtnTxt}>{Number(apt.price) > 0 ? `Charge $${apt.price}` : 'Charge'}</Text>
+                </Tap>
+              );
+            })()}
+          </>
+        )}
       </View>
     );
+
+    if (['pending', 'confirmed', 'in_chair'].includes(apt.status)) {
+      return (
+        <Swipeable key={apt.id}
+          renderLeftActions={renderSwipeRight(apt.status, apt.id)}
+          renderRightActions={renderSwipeLeft(apt.status, apt.id)}
+          overshootLeft={false} overshootRight={false} friction={2}>
+          {card}
+        </Swipeable>
+      );
+    }
+
+    return <View key={apt.id}>{card}</View>;
   };
 
   return (
     <SafeAreaView style={[S.container, { backgroundColor: C.bg }]} edges={['top']}>
       <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={C.bg} />
 
-      <Animated.View style={[S.header, { opacity: fadeAnim, borderBottomColor: C.border }]}>
-        <View style={[S.logoBox, { backgroundColor: C.accent + '15', borderColor: C.accent + '25' }]}>
-          <Scissors color={C.accent} size={18} />
-        </View>
+      {/* ── Header ── */}
+      <Animated.View style={[S.header, { opacity: fadeAnim }]}>
         <View style={{ flex: 1 }}>
-          <Text style={[S.shopName, { color: C.text }]}>{shopName}</Text>
-          <Text style={[S.dateLabel, { color: C.text3 }]}>{format(new Date(), 'EEEE, MMM d')}</Text>
+          <Text style={[S.brandName, { color: C.text }]}>kutz</Text>
         </View>
+        {dayStreak >= 2 && (
+          <View style={[S.streakPill, { backgroundColor: `${orange}12` }]}>
+            <Flame color={orange} size={13} />
+            <Text style={[S.streakNum, { color: orange }]}>{dayStreak}</Text>
+          </View>
+        )}
+        <Tap onPress={() => router.push('/(barber)/settings')}
+          style={[S.headerIcon, { backgroundColor: C.bg2 }]}>
+          <User color={C.text2} size={18} />
+        </Tap>
       </Animated.View>
 
       <ScrollView
@@ -430,159 +650,465 @@ export default function BarberDashboard() {
       >
         <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
 
-          {/* Stats */}
-          <View style={S.statsGrid}>
-            {[
-              { Icon: DollarSign,    color: green,    label: "Today's Revenue", value: `$${todayRevenue.toFixed(0)}` },
-              { Icon: TrendingUp,    color: blue,     label: 'Week Revenue',    value: `$${weekRevenue.toFixed(0)}` },
-              { Icon: CalendarCheck, color: C.accent, label: 'Completed',       value: `${completedToday}/${todayApts.length}` },
-              { Icon: Users,         color: yellow,   label: 'Total Clients',   value: String(totalClients) },
-            ].map(({ Icon, color, label, value }) => (
-              <View key={label} style={[S.statCard, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
-                <View style={[S.statIcon, { backgroundColor: color + '18' }]}><Icon color={color} size={18} /></View>
-                <Text style={[S.statValue, { color: C.text }]}>{value}</Text>
-                <Text style={[S.statLabel, { color: C.text3 }]}>{label}</Text>
+          {/* ── Daily Goal Card ── */}
+          {dailyGoal && dailyGoal > 0 && (
+            <View style={[S.goalCard, { backgroundColor: C.card, borderColor: goalReached ? `${green}35` : C.cardBorder }]}>
+              <View style={S.goalTop}>
+                <ProgressRing
+                  percent={goalPct} size={52} strokeWidth={5}
+                  color={goalReached ? green : C.accent}
+                  trackColor={C.border}
+                >
+                  <Target color={goalReached ? green : C.accent} size={16} />
+                </ProgressRing>
+                <View style={{ flex: 1, marginLeft: 14 }}>
+                  <Text style={[S.goalLabel, { color: C.text3 }]}>Daily Goal</Text>
+                  <Text style={[S.goalAmount, { color: C.text }]}>
+                    ${todayRevenue.toFixed(0)} <Text style={{ color: C.text3, fontWeight: '500', fontSize: 14 }}>/ ${dailyGoal}</Text>
+                  </Text>
+                </View>
+                {goalReached && <ConfettiPop trigger={goalReached} count={8} />}
               </View>
-            ))}
-          </View>
-
-          {/* In-chair indicator */}
-          {inChairToday > 0 && (
-            <View style={[S.inChairBanner, { backgroundColor: orange + '12', borderColor: orange + '35' }]}>
-              <View style={[S.inChairDot, { backgroundColor: orange }]} />
-              <Timer color={orange} size={16} />
-              <Text style={[S.inChairText, { color: C.text }]}>
-                {inChairToday} session{inChairToday > 1 ? 's' : ''} in progress
+              <Text style={[S.goalMotivation, { color: goalReached ? green : C.text2 }]}>
+                {goalReached ? 'Goal smashed!' :
+                 goalPct >= 75 ? 'Almost there, keep going' :
+                 goalPct >= 50 ? 'Over halfway' :
+                 goalPct >= 25 ? 'Building momentum' : 'Make it official'}
               </Text>
             </View>
           )}
 
-          {/* Charge button */}
-          <TouchableOpacity
-            onPress={() => router.push('/(barber)/charge')}
-            activeOpacity={0.85}
-            style={[S.chargeBtn, { backgroundColor: C.accent }]}
-          >
-            <CreditCard color="#fff" size={20} />
-            <Text style={S.chargeBtnText}>Charge Client</Text>
-          </TouchableOpacity>
+          {/* ── This Week Strip ── */}
+          <View style={[S.weekCard, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+            <View style={S.weekHeader}>
+              <Text style={[S.weekTitle, { color: C.text }]}>This Week</Text>
+              <Tap onPress={() => router.push('/(barber)/appointments')} style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                <Text style={[S.weekMore, { color: C.text3 }]}>{format(now, 'MMM yyyy')}</Text>
+                <CalendarCheck color={C.text3} size={14} />
+              </Tap>
+            </View>
 
-          {/* Pending banner */}
-          {pendingCount > 0 && (
-            <TouchableOpacity
-              onPress={() => router.push('/(barber)/appointments')}
-              style={[S.pendingBanner, { backgroundColor: yellow + '12', borderColor: yellow + '35' }]}
-              activeOpacity={0.85}
-            >
-              <View style={[S.pendingIcon, { backgroundColor: yellow + '20' }]}>
-                <AlertCircle color={yellow} size={20} />
+            {/* Date strip */}
+            <View style={S.dateStrip}>
+              {weekDates.map((d, i) => {
+                const tod = isToday(d);
+                const count = weekActivity[i];
+                const hasApts = count > 0;
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={S.dateCol}
+                    onPress={() => router.push('/(barber)/appointments')}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[S.dayLabel, { color: tod ? C.accent : C.text3 }]}>{DAY_SHORT[i]}</Text>
+                    <View style={[
+                      S.dateCircle,
+                      tod && { backgroundColor: C.accent },
+                      !tod && hasApts && { backgroundColor: `${C.accent}10` },
+                    ]}>
+                      <Text style={[S.dateNum, {
+                        color: tod ? '#fff' : hasApts ? C.accent : C.text,
+                        fontWeight: hasApts || tod ? '800' : '600',
+                      }]}>{format(d, 'd')}</Text>
+                    </View>
+                    <View style={[S.countPill, {
+                      backgroundColor: hasApts ? (tod ? C.accent : `${C.accent}12`) : 'transparent',
+                    }]}>
+                      <Text style={[S.countText, {
+                        color: hasApts ? (tod ? '#fff' : C.accent) : C.text3,
+                        fontWeight: hasApts ? '800' : '400',
+                      }]}>{hasApts ? count : '—'}</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={[S.sessionCount, { color: C.text3 }]}>
+              {weekActivity.reduce((a, b) => a + b, 0)} appointments this week
+            </Text>
+          </View>
+
+          {/* ── Next Up / CTA Section ── */}
+          {inChairApts.length > 0 ? (
+            /* Currently in session — with complete actions */
+            <View style={[S.inSessionCard, { backgroundColor: `${orange}08`, borderColor: `${orange}30` }]}>
+              <View style={S.inSessionTop}>
+                <Animated.View style={[S.inSessionDot, { backgroundColor: orange, opacity: pulseAnim }]} />
+                <Text style={[S.inSessionLabel, { color: orange }]}>In Session</Text>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[S.pendingTitle, { color: C.text }]}>
-                  {pendingCount} Pending Request{pendingCount > 1 ? 's' : ''}
-                </Text>
-                <Text style={[S.pendingSub, { color: C.text2 }]}>Tap to review & approve</Text>
-              </View>
-              <ChevronRight color={yellow} size={18} />
-            </TouchableOpacity>
+              {inChairApts.map(apt => {
+                const paysAtShop = apt.payment_method === 'at_shop' || !apt.payment_method;
+                const needsCharge = paysAtShop && !apt.paid;
+                return (
+                  <View key={apt.id}>
+                    <View style={S.inSessionRow}>
+                      <View style={[S.inSessionAvatar, { backgroundColor: `${avatarColor(apt.client_name)}15` }]}>
+                        <Text style={[S.inSessionAvatarTxt, { color: avatarColor(apt.client_name) }]}>
+                          {initials(apt.client_name || 'C')}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[S.inSessionName, { color: C.text }]}>{apt.client_name}</Text>
+                        <Text style={[S.inSessionMeta, { color: C.text3 }]}>{apt.service_name || 'Service'}</Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={[S.inSessionTimer, { color: orange }]}>{elapsedSince(apt.start_time)}</Text>
+                        {apt.price > 0 && <Text style={[S.inSessionPrice, { color: C.text2 }]}>${apt.price}</Text>}
+                      </View>
+                    </View>
+                    {/* Complete / Complete & Charge button */}
+                    <Tap
+                      disabled={updatingId === apt.id}
+                      onPress={async () => {
+                        await updateStatus(apt.id, 'completed');
+                        if (needsCharge) {
+                          router.push({
+                            pathname: '/(barber)/charge',
+                            params: { client_name: apt.client_name, client_id: apt.client_id || '', appointment_id: apt.id, prefill_amount: String(apt.price) },
+                          });
+                        }
+                      }}
+                      style={[S.inSessionBtn, { backgroundColor: needsCharge ? stripeColor : green }]}
+                    >
+                      {updatingId === apt.id ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : needsCharge ? (
+                        <>
+                          <CreditCard color="#fff" size={15} />
+                          <Text style={S.inSessionBtnTxt}>{Number(apt.price) > 0 ? `Complete & Charge $${apt.price}` : 'Complete & Charge'}</Text>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 color="#fff" size={15} />
+                          <Text style={S.inSessionBtnTxt}>Complete Session</Text>
+                        </>
+                      )}
+                    </Tap>
+                  </View>
+                );
+              })}
+            </View>
+          ) : nextUp ? (
+            /* Ready to start */
+            <View style={S.readySection}>
+              <Text style={[S.readyTitle, { color: C.text }]}>
+                {nextUp.status === 'pending' ? 'New request' : 'Ready to cut?'}
+              </Text>
+              <Text style={[S.readySub, { color: C.text3 }]}>
+                {nextUp.client_name} — {fmt12(nextUp.start_time)}
+                {nextUp.service_name ? ` · ${nextUp.service_name}` : ''}
+              </Text>
+              {nextUp.status === 'confirmed' ? (
+                <BigCTA
+                  onPress={() => updateStatus(nextUp.id, 'in_chair')}
+                  label="Start Session"
+                  sub={`${nextUp.client_name} is waiting`}
+                  color={C.accent}
+                  icon={<Play color="#fff" size={24} strokeWidth={2.5} />}
+                />
+              ) : nextUp.status === 'pending' ? (
+                <BigCTA
+                  onPress={() => updateStatus(nextUp.id, 'confirmed')}
+                  label="Confirm Booking"
+                  sub={`${nextUp.client_name} · ${fmt12(nextUp.start_time)}`}
+                  color={green}
+                  icon={<Check color="#fff" size={24} strokeWidth={2.5} />}
+                />
+              ) : null}
+            </View>
+          ) : (
+            /* No appointments */
+            <View style={S.readySection}>
+              <Text style={[S.readyTitle, { color: C.text }]}>Ready to build?</Text>
+              <Text style={[S.readySub, { color: C.text3 }]}>Charge a walk-in to get started</Text>
+              <BigCTA
+                onPress={() => router.push('/(barber)/charge')}
+                label="Charge Client"
+                color={C.accent}
+                icon={<CreditCard color="#fff" size={24} />}
+              />
+            </View>
           )}
 
-          {/* Today's Schedule */}
+          {/* Quick charge link when in session */}
+          {inChairApts.length > 0 && (
+            <Tap onPress={() => router.push('/(barber)/charge')}
+              style={[S.chargeLink, { borderColor: C.cardBorder }]}>
+              <CreditCard color={C.text2} size={16} />
+              <Text style={[S.chargeLinkText, { color: C.text2 }]}>Charge walk-in</Text>
+              <ChevronRight color={C.text3} size={14} />
+            </Tap>
+          )}
+
+          {/* Pending banner */}
+          {pendingCount > 1 && (
+            <Tap onPress={() => router.push('/(barber)/appointments')}
+              style={[S.pendingBanner, { backgroundColor: `${yellow}10`, borderColor: `${yellow}30` }]}>
+              <View style={[S.pendingIcon, { backgroundColor: `${yellow}18` }]}>
+                <AlertCircle color={yellow} size={18} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[S.pendingTitle, { color: C.text }]}>{pendingCount} Pending Requests</Text>
+                <Text style={[S.pendingSub, { color: C.text3 }]}>Tap to review</Text>
+              </View>
+              <ChevronRight color={yellow} size={16} />
+            </Tap>
+          )}
+
+          {/* ── Stats Widgets ── */}
+          <View style={S.statsGrid}>
+            <View style={[S.statWidget, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+              <View style={[S.statIconBox, { backgroundColor: `${green}12` }]}>
+                <DollarSign color={green} size={16} />
+              </View>
+              <AnimatedCounter value={todayRevenue} prefix="$" style={[S.statWidgetVal, { color: C.text }]} />
+              <Text style={[S.statWidgetLabel, { color: C.text3 }]}>Today</Text>
+            </View>
+            <View style={[S.statWidget, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+              <View style={[S.statIconBox, { backgroundColor: `${blue}12` }]}>
+                <TrendingUp color={blue} size={16} />
+              </View>
+              <AnimatedCounter value={weekRevenue} prefix="$" style={[S.statWidgetVal, { color: C.text }]} />
+              <Text style={[S.statWidgetLabel, { color: C.text3 }]}>This Week</Text>
+            </View>
+            <View style={[S.statWidget, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+              <View style={[S.statIconBox, { backgroundColor: `${C.accent}12` }]}>
+                <Scissors color={C.accent} size={16} />
+              </View>
+              <View style={S.statWidgetRow}>
+                <Text style={[S.statWidgetVal, { color: C.text }]}>{completedToday}</Text>
+                <Text style={[S.statWidgetFrac, { color: C.text3 }]}>/{todayApts.filter(a => a.status !== 'cancelled').length}</Text>
+              </View>
+              <View style={[S.miniBar, { backgroundColor: C.border }]}>
+                <View style={[S.miniBarFill, {
+                  width: `${todayApts.length > 0 ? (completedToday / todayApts.filter(a => a.status !== 'cancelled').length) * 100 : 0}%`,
+                  backgroundColor: C.accent,
+                }]} />
+              </View>
+              <Text style={[S.statWidgetLabel, { color: C.text3 }]}>Completed</Text>
+            </View>
+            <View style={[S.statWidget, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+              <View style={[S.statIconBox, { backgroundColor: `${yellow}12` }]}>
+                <Users color={yellow} size={16} />
+              </View>
+              <AnimatedCounter value={totalClients} style={[S.statWidgetVal, { color: C.text }]} />
+              <Text style={[S.statWidgetLabel, { color: C.text3 }]}>Clients</Text>
+            </View>
+          </View>
+
+          {/* ── Today's Schedule ── */}
           <View style={S.section}>
             <View style={S.sectionHeader}>
               <Text style={[S.sectionTitle, { color: C.text }]}>Today's Schedule</Text>
-              <TouchableOpacity onPress={() => router.push('/(barber)/appointments')}>
-                <Text style={[S.sectionLink, { color: C.accent }]}>View all →</Text>
-              </TouchableOpacity>
+              <Tap onPress={() => router.push('/(barber)/appointments')}>
+                <Text style={[S.sectionLink, { color: C.accent }]}>View all</Text>
+              </Tap>
             </View>
 
             {todayApts.length === 0 ? (
-              <View style={[S.emptySchedule, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
-                <CalendarCheck color={C.text3} size={36} />
+              <View style={[S.emptyCard, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+                <CalendarCheck color={C.text3} size={32} />
                 <Text style={[S.emptyText, { color: C.text2 }]}>No appointments today</Text>
-                <Text style={{ fontSize: 12, color: C.text3 }}>Enjoy the downtime ☕</Text>
+                <Text style={[S.emptySub, { color: C.text3 }]}>Share your booking link to fill the chair</Text>
               </View>
             ) : (
-              todayApts.map(renderAppointment)
+              <Animated.View style={{ transform: [{ scale: sessionStartScale }] }}>
+                {todayApts.map(renderAppointment)}
+              </Animated.View>
             )}
           </View>
 
-          {/* Quick nav */}
-          <View style={{ gap: 10 }}>
+          {/* ── Quick Nav ── */}
+          <View style={{ gap: 8 }}>
             {[
               { label: 'Full Schedule', sub: 'Calendar & history',    Icon: CalendarCheck, color: C.accent, route: '/(barber)/appointments' },
               { label: 'Clients',       sub: `${totalClients} total`, Icon: Users,         color: blue,     route: '/(barber)/clients' },
               { label: 'Messages',      sub: 'Chat with clients',     Icon: MessageCircle, color: green,    route: '/(barber)/messages' },
             ].map(({ label, sub, Icon, color, route }) => (
-              <TouchableOpacity key={label} onPress={() => router.push(route as any)}
-                style={[S.navCard, { backgroundColor: C.card, borderColor: C.cardBorder }]} activeOpacity={0.75}>
-                <View style={[S.navIcon, { backgroundColor: color + '18' }]}><Icon color={color} size={20} /></View>
+              <Tap key={label} onPress={() => router.push(route as any)}
+                style={[S.navCard, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+                <View style={[S.navIconBox, { backgroundColor: `${color}12` }]}>
+                  <Icon color={color} size={18} />
+                </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[S.navLabel, { color: C.text }]}>{label}</Text>
-                  <Text style={[S.navSub, { color: C.text2 }]}>{sub}</Text>
+                  <Text style={[S.navSub, { color: C.text3 }]}>{sub}</Text>
                 </View>
-                <ChevronRight color={C.text3} size={18} />
-              </TouchableOpacity>
+                <ChevronRight color={C.text3} size={16} />
+              </Tap>
             ))}
           </View>
 
         </Animated.View>
       </ScrollView>
+
+      {/* ── Celebration Overlay ── */}
+      {celebration && (
+        <Pressable onPress={dismissCelebration} style={S.celebOverlay}>
+          <Animated.View style={[S.celebScrim, { opacity: celebOpacity }]} />
+          <Animated.View style={[S.celebCard, {
+            backgroundColor: C.card,
+            borderColor: `${green}35`,
+            opacity: celebOpacity,
+            transform: [{ scale: celebScale }],
+          }]}>
+            <View style={[S.celebCircle, { backgroundColor: `${green}12` }]}>
+              <CheckCircle2 color={green} size={48} strokeWidth={1.5} />
+              <ConfettiPop trigger={showConfetti} count={12} />
+            </View>
+            {celebration.amount > 0 && (
+              <AnimatedCounter
+                value={celebration.amount}
+                prefix="$"
+                style={{ fontSize: 36, fontWeight: '900', color: C.text, letterSpacing: -1, marginTop: 12 }}
+              />
+            )}
+            <Text style={[S.celebName, { color: C.text }]}>{celebration.name}</Text>
+            <Text style={[S.celebSub, { color: C.text2 }]}>Session complete</Text>
+            <View style={[S.celebTotal, { backgroundColor: C.bg2 }]}>
+              <Text style={[S.celebTotalLabel, { color: C.text3 }]}>Today's total</Text>
+              <Text style={[S.celebTotalVal, { color: green }]}>${todayRevenue.toFixed(0)}</Text>
+            </View>
+          </Animated.View>
+        </Pressable>
+      )}
     </SafeAreaView>
   );
 }
 
+// ── Styles ───────────────────────────────────────────────────────────────────
 const S = StyleSheet.create({
   container:      { flex: 1 },
   loader:         { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header:         { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 6, paddingBottom: 14, borderBottomWidth: 1 },
-  logoBox:        { width: 40, height: 40, borderRadius: 13, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  shopName:       { fontSize: 16, fontWeight: '800', letterSpacing: -0.3 },
-  dateLabel:      { fontSize: 12, marginTop: 1 },
-  scroll:         { paddingHorizontal: 18, paddingTop: 16 },
-  statsGrid:      { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14 },
-  statCard:       { width: '47.5%', borderRadius: 20, padding: 16, borderWidth: 1 },
-  statIcon:       { width: 38, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  statValue:      { fontSize: 22, fontWeight: '900', letterSpacing: -0.5 },
-  statLabel:      { fontSize: 11, marginTop: 3 },
-  inChairBanner:  { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 12, borderWidth: 1 },
-  inChairDot:     { width: 7, height: 7, borderRadius: 4, marginRight: 2 },
-  inChairText:    { fontSize: 13, fontWeight: '600' },
-  chargeBtn:      { height: 52, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 14 },
-  chargeBtnText:  { color: '#fff', fontSize: 16, fontWeight: '800' },
-  pendingBanner:  { borderRadius: 18, padding: 16, marginBottom: 16, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 14 },
-  pendingIcon:    { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  pendingTitle:   { fontWeight: '700', fontSize: 14 },
-  pendingSub:     { fontSize: 12, marginTop: 2 },
+
+  // Header — clean, PumpPick style
+  header:         { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 4, paddingBottom: 14, gap: 10 },
+  brandName:      { fontSize: 22, fontWeight: '900', letterSpacing: -0.8 },
+  streakPill:     { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10 },
+  streakNum:      { fontSize: 12, fontWeight: '800' },
+  headerIcon:     { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+
+  scroll:         { paddingHorizontal: 18, paddingTop: 4 },
+
+  // Daily goal card
+  goalCard:       { borderRadius: 20, padding: 18, borderWidth: 1, marginBottom: 14, overflow: 'hidden' },
+  goalTop:        { flexDirection: 'row', alignItems: 'center' },
+  goalLabel:      { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+  goalAmount:     { fontSize: 20, fontWeight: '900', letterSpacing: -0.5, marginTop: 2 },
+  goalMotivation: { fontSize: 12, marginTop: 10, fontWeight: '500' },
+
+  // Week card — PumpPick inspired
+  weekCard:       { borderRadius: 20, padding: 18, borderWidth: 1, marginBottom: 14 },
+  weekHeader:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  weekTitle:      { fontSize: 16, fontWeight: '800', letterSpacing: -0.3 },
+  weekMore:       { fontSize: 12, fontWeight: '500', marginRight: 4 },
+  dateStrip:      { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
+  dateCol:        { alignItems: 'center', gap: 6, flex: 1 },
+  dayLabel:       { fontSize: 11, fontWeight: '600' },
+  dateCircle:     { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  dateNum:        { fontSize: 14, fontWeight: '700' },
+  countPill:      { borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, marginTop: 4, minWidth: 20, alignItems: 'center' },
+  countText:      { fontSize: 11 },
+  sessionCount:   { fontSize: 11, fontWeight: '500', marginTop: 8 },
+
+  // Ready section — big CTA like PumpPick
+  readySection:   { marginBottom: 14 },
+  readyTitle:     { fontSize: 18, fontWeight: '800', letterSpacing: -0.3 },
+  readySub:       { fontSize: 13, marginTop: 3, marginBottom: 12 },
+  bigCTA:         { flexDirection: 'row', alignItems: 'center', borderRadius: 16, paddingVertical: 18, paddingHorizontal: 22 },
+  bigCTALabel:    { fontSize: 17, fontWeight: '800', color: '#fff' },
+  bigCTASub:      { fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 2, fontWeight: '500' },
+  bigCTAIcon:     { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
+
+  // In session card
+  inSessionCard:  { borderRadius: 18, padding: 16, marginBottom: 14, borderWidth: 1 },
+  inSessionTop:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  inSessionDot:   { width: 8, height: 8, borderRadius: 4 },
+  inSessionLabel: { fontSize: 13, fontWeight: '700' },
+  inSessionRow:   { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 6 },
+  inSessionAvatar:{ width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  inSessionAvatarTxt: { fontSize: 14, fontWeight: '800' },
+  inSessionName:  { fontSize: 15, fontWeight: '700' },
+  inSessionMeta:  { fontSize: 12, marginTop: 1 },
+  inSessionTimer: { fontSize: 14, fontWeight: '800' },
+  inSessionPrice: { fontSize: 12, fontWeight: '600', marginTop: 1 },
+  inSessionBtn:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 13, borderRadius: 13, marginTop: 10 },
+  inSessionBtnTxt:{ fontSize: 14, fontWeight: '700', color: '#fff' },
+
+  // Charge link
+  chargeLink:     { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 14, borderWidth: 1, marginBottom: 14 },
+  chargeLinkText: { flex: 1, fontSize: 14, fontWeight: '600' },
+
+  // Pending
+  pendingBanner:  { borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  pendingIcon:    { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  pendingTitle:   { fontSize: 14, fontWeight: '700' },
+  pendingSub:     { fontSize: 12, marginTop: 1 },
+
+  // Stats grid
+  statsGrid:      { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 18 },
+  statWidget:     { width: '47.5%', borderRadius: 18, padding: 16, borderWidth: 1 },
+  statIconBox:    { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  statWidgetVal:  { fontSize: 20, fontWeight: '900', letterSpacing: -0.5 },
+  statWidgetFrac: { fontSize: 14, fontWeight: '500' },
+  statWidgetRow:  { flexDirection: 'row', alignItems: 'baseline' },
+  statWidgetLabel:{ fontSize: 11, marginTop: 3, fontWeight: '500' },
+  miniBar:        { height: 3, borderRadius: 2, marginTop: 8, overflow: 'hidden' },
+  miniBarFill:    { height: '100%', borderRadius: 2 },
+
+  // Section
   section:        { marginBottom: 16 },
   sectionHeader:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
-  sectionTitle:   { fontSize: 16, fontWeight: '800' },
+  sectionTitle:   { fontSize: 16, fontWeight: '800', letterSpacing: -0.2 },
   sectionLink:    { fontSize: 13, fontWeight: '600' },
-  emptySchedule:  { borderRadius: 20, padding: 36, alignItems: 'center', borderWidth: 1, gap: 8 },
+
+  // Empty
+  emptyCard:      { borderRadius: 20, padding: 36, alignItems: 'center', borderWidth: 1, gap: 8 },
   emptyText:      { fontSize: 14, fontWeight: '600' },
-  aptCard:        { borderRadius: 18, marginBottom: 10, overflow: 'hidden', flexDirection: 'row' },
-  accentBar:      { width: 4 },
-  aptTopRow:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 14, paddingRight: 14, marginBottom: 10 },
-  timeChip:       { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  timeText:       { fontSize: 12, fontWeight: '700' },
-  priceText:      { fontSize: 14, fontWeight: '800' },
-  statusPill:     { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20 },
-  statusPillText: { fontSize: 11, fontWeight: '700' },
-  clientRow:      { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10, paddingRight: 14 },
-  avatar:         { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
-  avatarTxt:      { fontSize: 13, fontWeight: '800' },
+  emptySub:       { fontSize: 12, textAlign: 'center' },
+
+  // Appointment card — clean, minimal
+  aptCard:        { borderRadius: 18, marginBottom: 10, padding: 16, borderWidth: 1 },
+  aptHeader:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  aptTimeRow:     { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  timeDot:        { width: 6, height: 6, borderRadius: 3 },
+  aptTime:        { fontSize: 12, fontWeight: '600' },
+  liveChip:       { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  liveDotSmall:   { width: 5, height: 5, borderRadius: 3 },
+  liveText:       { fontSize: 10, fontWeight: '700' },
+  aptPrice:       { fontSize: 14, fontWeight: '800' },
+  paidChip:       { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  paidChipText:   { fontSize: 10, fontWeight: '700' },
+  aptClient:      { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
+  aptAvatar:      { width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  aptAvatarTxt:   { fontSize: 14, fontWeight: '800' },
   aptName:        { fontSize: 15, fontWeight: '700' },
-  metaText:       { fontSize: 11 },
-  payBadge:       { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5 },
-  payBadgeText:   { fontSize: 9, fontWeight: '700' },
-  actionRow:      { flexDirection: 'row', gap: 8, paddingBottom: 12, paddingRight: 14 },
-  actionBtn:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12 },
-  actionBtnTxt:   { fontSize: 13, fontWeight: '700', color: '#fff' },
-  actionIconBtn:  { width: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
-  paidRow:        { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, marginBottom: 12, marginRight: 14, alignSelf: 'flex-start' },
-  paidTxt:        { fontSize: 12, fontWeight: '600' },
-  navCard:        { borderRadius: 18, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1 },
-  navIcon:        { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  aptMeta:        { fontSize: 11, fontWeight: '500' },
+  aptActions:     { flexDirection: 'row', gap: 8, marginTop: 12 },
+  aptBtn:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 13 },
+  aptBtnTxt:      { fontSize: 13, fontWeight: '700', color: '#fff' },
+  aptBtnSmall:    { width: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 13, borderWidth: 1 },
+
+  // Swipe
+  swipeAction:    { justifyContent: 'center', alignItems: 'center', width: 80, borderRadius: 18, marginBottom: 10 },
+  swipeActionText:{ color: '#fff', fontWeight: '800', fontSize: 13 },
+
+  // Quick nav
+  navCard:        { borderRadius: 16, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1 },
+  navIconBox:     { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   navLabel:       { fontWeight: '700', fontSize: 14 },
-  navSub:         { fontSize: 12, marginTop: 2 },
+  navSub:         { fontSize: 12, marginTop: 1 },
+
+  // Celebration
+  celebOverlay:   { ...StyleSheet.absoluteFillObject, zIndex: 100, alignItems: 'center', justifyContent: 'center' },
+  celebScrim:     { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)' },
+  celebCard:      { borderRadius: 28, padding: 32, alignItems: 'center', borderWidth: 1, width: '82%', maxWidth: 340 },
+  celebCircle:    { width: 96, height: 96, borderRadius: 48, alignItems: 'center', justifyContent: 'center', overflow: 'visible' },
+  celebName:      { fontSize: 18, fontWeight: '800', marginTop: 4 },
+  celebSub:       { fontSize: 13, marginTop: 2 },
+  celebTotal:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: 20, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 },
+  celebTotalLabel:{ fontSize: 12, fontWeight: '600' },
+  celebTotalVal:  { fontSize: 16, fontWeight: '900' },
 });

@@ -7,7 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
   LogOut, ChevronRight, ChevronLeft, MapPin, Scissors, Star,
-  Sun, Moon, Save, ArrowLeftRight,
+  Sun, Moon, Save,
   Bell, Calendar, MessageCircle, Gift, Megaphone, BellRing,
   User, History, Shield, Sparkles, Trash2, Cake,
 } from 'lucide-react-native';
@@ -246,12 +246,6 @@ export default function SettingsScreen() {
     setSavingProfile(false);
   };
 
-  const switchMode = async (nextMode: 'client' | 'barber') => {
-    await AsyncStorage.setItem('user_mode', nextMode);
-    setUserMode(nextMode);
-    router.replace('/');
-  };
-
   const updateNotifSetting = useCallback(async (key: keyof NotificationSettings, value: boolean) => {
     const next = { ...notifSettings, [key]: value };
     setNotifSettings(next);
@@ -297,7 +291,16 @@ export default function SettingsScreen() {
         <Animated.View style={{ opacity: fade, transform: [{ translateY: slide }], gap: 24 }}>
 
           {/* ── Profile hero ── */}
-          <View style={[S.profileHero, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+          <TouchableOpacity
+            onPress={() => !editingName && router.push('/(client)/profile')}
+            activeOpacity={0.88}
+            style={[S.profileHero, { backgroundColor: C.card, borderColor: C.cardBorder }]}
+          >
+            {!editingName && (
+              <View style={{ position: 'absolute', top: 14, right: 14 }}>
+                <ChevronRight color={C.text3} size={16} />
+              </View>
+            )}
             {/* Avatar */}
             <View style={[S.avatarRing, { borderColor: `${C.accent}40` }]}>
               <View style={[S.avatar, { backgroundColor: `${C.accent}18` }]}>
@@ -387,7 +390,12 @@ export default function SettingsScreen() {
                 </>
               ) : null}
             </View>
-          </View>
+            {!editingName && (
+              <View style={[S.profileHeroFooter, { borderTopColor: C.border }]}>
+                <Text style={[S.profileHeroFooterTxt, { color: C.accent }]}>View full client profile</Text>
+              </View>
+            )}
+          </TouchableOpacity>
 
           {/* ── My shop (if not linked) ── */}
           {!shopName && (
@@ -480,11 +488,6 @@ export default function SettingsScreen() {
             <Text style={[S.secLabel, { color: C.text3 }]}>ACCOUNT</Text>
             <View style={[S.section, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
               <Row
-                C={C} Icon={ArrowLeftRight}
-                label={`Switch to ${userMode === 'client' ? 'Barber' : 'Client'} Mode`}
-                onPress={() => switchMode(userMode === 'client' ? 'barber' : 'client')}
-              />
-              <Row
                 C={C} Icon={MapPin}
                 label="Find Barbershops"
                 onPress={() => router.push('/(client)/discover')}
@@ -555,6 +558,14 @@ const S = StyleSheet.create({
       android: { elevation: 3 },
     }),
   },
+  profileHeroFooter: {
+    width: '100%',
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    alignItems: 'center',
+  },
+  profileHeroFooterTxt: { fontSize: 12, fontWeight: '700' },
   avatarRing: {
     width: 80, height: 80, borderRadius: 40, borderWidth: 2.5,
     alignItems: 'center', justifyContent: 'center', marginBottom: 14,

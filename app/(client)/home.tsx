@@ -19,6 +19,7 @@ import type { User } from '@supabase/supabase-js';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '@/lib/theme';
+import AnimatedCounter from '@/components/ui/AnimatedCounter';
 
 // Keep in sync with _layout.tsx BAR_HEIGHT + bottom offset
 const TAB_BAR_HEIGHT = 72;
@@ -433,7 +434,7 @@ export default function HomeScreen() {
 
               {/* Right: points */}
               <View style={{ alignItems: 'flex-end' }}>
-                <Text style={[S.tierPts, { color: tierInk }]}>{pointsBalance}</Text>
+                <AnimatedCounter value={pointsBalance} style={{ fontSize: 36, fontWeight: '900', letterSpacing: -1.5, color: tierInk }} />
                 <Text style={[S.tierPtsLbl, { color: tierInk, opacity: 0.6 }]}>points</Text>
               </View>
             </View>

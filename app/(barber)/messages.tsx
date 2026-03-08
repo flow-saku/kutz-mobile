@@ -2,14 +2,17 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
   RefreshControl, TextInput, KeyboardAvoidingView, Platform, Alert,
-  StyleSheet, StatusBar,
+  StyleSheet, StatusBar, Animated, Pressable,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MessageCircle, Send, ArrowLeft, Hash, Users } from 'lucide-react-native';
+import { MessageCircle, Send, ArrowLeft, Hash, Users, Plus, X } from 'lucide-react-native';
+import * as Haptics from 'expo-haptics';
+import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
 import { resolveBarberScope } from '@/lib/barber';
 import { format, isToday, isYesterday } from 'date-fns';
+
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -75,6 +78,23 @@ function contrastTextColor(bg: string) {
 
 const TAB_BAR_HEIGHT = 72;
 
+// ─── Spring-animated pressable ────────────────────────────────────────────────
+function Tap({ onPress, style, children }: { onPress: () => void; style?: any; children: React.ReactNode }) {
+  const s = useRef(new Animated.Value(1)).current;
+  return (
+    <Pressable
+      onPressIn={() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        Animated.spring(s, { toValue: 0.97, useNativeDriver: true, tension: 600, friction: 32 }).start();
+      }}
+      onPressOut={() => Animated.spring(s, { toValue: 1, useNativeDriver: true, tension: 400, friction: 26 }).start()}
+      onPress={onPress}
+    >
+      <Animated.View style={[style, { transform: [{ scale: s }] }]}>{children}</Animated.View>
+    </Pressable>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function BarberMessages() {
@@ -120,6 +140,10 @@ export default function BarberMessages() {
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+
+  // ── New DM picker ────────────────────────────────────────────────────────
+  const [showNewDMPicker, setShowNewDMPicker] = useState(false);
+  const [teamMembers, setTeamMembers] = useState<Array<{ id: string; name: string }>>([]);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -370,6 +394,7 @@ export default function BarberMessages() {
 
   // ── Shared send handler ─────────────────────────────────────────────────
   const handleSend = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     if (selectedClientConv) return sendClientMessage();
     if (internalSelection?.type === 'channel') return sendChannelMessage();
     if (internalSelection?.type === 'dm') return sendDMMessage();
@@ -496,6 +521,53 @@ export default function BarberMessages() {
     }
   };
 
+  const openNewDMPicker = async () => {
+    if (!ownerUid || !barberId) return;
+    setTeamMembers([]);
+    setShowNewDMPicker(true);
+    const { data: memberData } = await supabase
+      .from('team_members' as any)
+      .select('user_id, display_name')
+      .eq('shop_owner_id', ownerUid)
+      .eq('is_active', true);
+
+    const members: Array<{ id: string; name: string }> = ((memberData || []) as any[])
+      .filter((m: any) => m.user_id && m.user_id !== barberId)
+      .map((m: any) => ({ id: m.user_id, name: m.display_name || 'Team Member' }));
+
+    // Add shop owner if the current user is staff
+    if (barberId !== ownerUid) {
+      const { data: ownerProfile } = await supabase
+        .from('profiles').select('display_name').eq('user_id', ownerUid).maybeSingle();
+      members.unshift({ id: ownerUid, name: (ownerProfile as any)?.display_name || 'Shop Owner' });
+    }
+    setTeamMembers(members);
+  };
+
+  const startNewDM = async (otherId: string, otherName: string) => {
+    if (!barberId) return;
+    const existing = barberConvs.find(c => c.other_barber.id === otherId);
+    if (existing) { openBarberDM(existing); setShowNewDMPicker(false); return; }
+
+    const { data, error } = await supabase
+      .from('barber_conversations' as any)
+      .insert({ participant1_id: barberId, participant2_id: otherId } as any)
+      .select().single();
+    if (error) { Alert.alert('Error', 'Could not start conversation'); return; }
+
+    const conv: BarberConv = {
+      id: (data as any).id,
+      participant1_id: barberId,
+      participant2_id: otherId,
+      last_message: null,
+      last_message_at: null,
+      other_barber: { id: otherId, display_name: otherName, avatar_url: null },
+    };
+    setBarberConvs(prev => [...prev, conv]);
+    openBarberDM(conv);
+    setShowNewDMPicker(false);
+  };
+
   // ═══════════════════════════════════════════════════════════════════════════
   // SHARED CHAT VIEW (client DM, channel, barber DM)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -534,20 +606,26 @@ export default function BarberMessages() {
       <SafeAreaView style={[S.container, { backgroundColor: C.bg }]} edges={['top']}>
         <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={C.bg} />
 
-        {/* Header */}
         <View style={[S.chatHeader, { borderBottomColor: C.border }]}>
           <TouchableOpacity onPress={goBack} style={[S.backBtn, { backgroundColor: C.bg2, borderColor: C.border }]}>
             <ArrowLeft color={C.text} size={18} />
           </TouchableOpacity>
-          <View style={[S.chatAvatar, { backgroundColor: C.accent + '18' }]}>
-            {isChannel
-              ? <Hash color={C.accent} size={18} strokeWidth={2.5} />
-              : <Text style={[S.chatAvatarTxt, { color: C.accent }]}>{headerTitle.replace('#','').charAt(0).toUpperCase()}</Text>
-            }
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[S.chatName, { color: C.text }]} numberOfLines={1}>{headerTitle}</Text>
-            <Text style={[S.chatSub, { color: C.text3 }]}>{headerSub}</Text>
+          <View style={[S.chatHeroTap, { backgroundColor: C.bg2, borderColor: C.border }]}>
+            <View style={[S.chatAvatar, { backgroundColor: C.accent + '18' }]}>
+              {isChannel
+                ? <Hash color={C.accent} size={18} strokeWidth={2.5} />
+                : <Text style={[S.chatAvatarTxt, { color: C.accent }]}>{headerTitle.replace('#', '').charAt(0).toUpperCase()}</Text>
+              }
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[S.chatName, { color: C.text }]} numberOfLines={1}>{headerTitle}</Text>
+              <Text style={[S.chatSub, { color: C.text3 }]}>{headerSub}</Text>
+            </View>
+            <View style={[S.chatHeroPill, { backgroundColor: C.bg, borderColor: C.border }]}>
+              <Text style={[S.chatHeroPillTxt, { color: C.text }]}>
+                {isChannel ? 'Channel' : isClientChat ? 'Client' : 'DM'}
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -637,20 +715,24 @@ export default function BarberMessages() {
           </ScrollView>
 
           <View style={[S.inputRow, { borderTopColor: C.border, backgroundColor: C.bg, paddingBottom: tabBarClearance }]}>
-            <TextInput
-              value={newMessage} onChangeText={setNewMessage}
-              placeholder={isChannel ? `Message #${(internalSelection as any)?.data?.name}…` : 'Message…'}
-              placeholderTextColor={C.text3}
-              style={[S.input, { backgroundColor: C.bg2, borderColor: C.border, color: C.text }]}
-              multiline maxLength={500}
-            />
-            <TouchableOpacity onPress={handleSend} disabled={!newMessage.trim() || sending}
-              style={[S.sendBtn, { backgroundColor: newMessage.trim() ? C.accent : C.bg2 }]}>
-              {sending
-                ? <ActivityIndicator color={newMessage.trim() ? accentOn : C.text3} size="small" />
-                : <Send color={newMessage.trim() ? accentOn : C.text3} size={16} strokeWidth={2} />
-              }
-            </TouchableOpacity>
+            <View style={[S.inputShell, { backgroundColor: C.bg2, borderColor: C.border }]}>
+              <TextInput
+                value={newMessage}
+                onChangeText={setNewMessage}
+                placeholder={isChannel ? `Message #${(internalSelection as any)?.data?.name}…` : 'Write a clean reply…'}
+                placeholderTextColor={C.text3}
+                style={[S.input, { color: C.text }]}
+                multiline
+                maxLength={500}
+              />
+              <TouchableOpacity onPress={handleSend} disabled={!newMessage.trim() || sending}
+                style={[S.sendBtn, { backgroundColor: newMessage.trim() ? C.accent : C.bg }]}>
+                {sending
+                  ? <ActivityIndicator color={newMessage.trim() ? accentOn : C.text3} size="small" />
+                  : <Send color={newMessage.trim() ? accentOn : C.text3} size={16} strokeWidth={2} />
+                }
+              </TouchableOpacity>
+            </View>
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -665,20 +747,30 @@ export default function BarberMessages() {
     <SafeAreaView style={[S.container, { backgroundColor: C.bg }]} edges={['top']}>
       <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={C.bg} />
 
-      {/* Title */}
       <View style={[S.titleRow, { borderBottomColor: C.border }]}>
-        <Text style={[S.title, { color: C.text }]}>Messages</Text>
+        <TouchableOpacity onPress={() => router.navigate('/(barber)/dashboard')} style={S.titleBackBtn} activeOpacity={0.7}>
+          <ArrowLeft color={C.text} size={22} />
+        </TouchableOpacity>
+        <Text style={[S.title, { color: C.text, flex: 1 }]}>Messages</Text>
       </View>
 
-      {/* Tabs */}
-      <View style={[S.tabRow, { borderBottomColor: C.border, backgroundColor: C.bg }]}>
+      <View style={[S.tabWrap, { backgroundColor: C.bg }]}>
+        <View style={[S.tabRow, { borderColor: C.border, backgroundColor: C.bg2 }]}>
         {(['clients', 'internal'] as const).map(tab => (
-          <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)} style={[S.tabBtn, activeTab === tab && { borderBottomColor: C.accent, borderBottomWidth: 2 }]}>
-            <Text style={[S.tabLabel, { color: activeTab === tab ? C.accent : C.text3 }]}>
+          <TouchableOpacity
+            key={tab}
+            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setActiveTab(tab); }}
+            style={[
+              S.tabBtn,
+              activeTab === tab && { backgroundColor: C.card, borderColor: C.border, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 2 },
+            ]}
+          >
+            <Text style={[S.tabLabel, { color: activeTab === tab ? C.text : C.text3 }]}>
               {tab === 'clients' ? 'Clients' : 'Internal'}
             </Text>
           </TouchableOpacity>
         ))}
+        </View>
       </View>
 
       <ScrollView
@@ -697,9 +789,8 @@ export default function BarberMessages() {
             </View>
           ) : (
             clientConvs.map(conv => (
-              <TouchableOpacity key={conv.id} onPress={() => openClientConv(conv)}
-                style={[S.convCard, { backgroundColor: C.card, borderColor: conv.unread_count > 0 ? C.accent + '30' : C.cardBorder }]}
-                activeOpacity={0.8}>
+              <Tap key={conv.id} onPress={() => openClientConv(conv)}
+                style={[S.convCard, { backgroundColor: C.card, borderColor: conv.unread_count > 0 ? C.accent + '30' : C.cardBorder }]}>
                 <View style={[S.convAvatar, { backgroundColor: C.accent + '18' }]}>
                   <Text style={[S.convAvatarTxt, { color: C.accent }]}>{conv.client_name.charAt(0).toUpperCase()}</Text>
                 </View>
@@ -717,7 +808,7 @@ export default function BarberMessages() {
                     )}
                   </View>
                 </View>
-              </TouchableOpacity>
+              </Tap>
             ))
           )
         )}
@@ -726,74 +817,123 @@ export default function BarberMessages() {
         {activeTab === 'internal' && (
           <>
             {/* CHANNELS section */}
-            {teamChannels.length > 0 && (
-              <>
-                <View style={S.sectionHeader}>
-                  <Hash color={C.text3} size={12} strokeWidth={2.5} />
-                  <Text style={[S.sectionLabel, { color: C.text3 }]}>CHANNELS</Text>
-                </View>
-                {teamChannels.map(channel => (
-                  <TouchableOpacity key={channel.id} onPress={() => openChannel(channel)}
-                    style={[S.convCard, { backgroundColor: C.card, borderColor: C.cardBorder }]}
-                    activeOpacity={0.8}>
-                    <View style={[S.convAvatar, { backgroundColor: C.accent + '12' }]}>
-                      <Hash color={C.accent} size={20} strokeWidth={2.5} />
+            <View style={S.sectionHeader}>
+              <Hash color={C.text3} size={12} strokeWidth={2.5} />
+              <Text style={[S.sectionLabel, { color: C.text3 }]}>CHANNELS</Text>
+            </View>
+            {teamChannels.length === 0 ? (
+              <View style={[S.convCard, { backgroundColor: C.card, borderColor: C.cardBorder, justifyContent: 'center' }]}>
+                <Text style={[S.convPreview, { color: C.text3, flex: 0, textAlign: 'center' }]}>No channels yet</Text>
+              </View>
+            ) : (
+              teamChannels.map((channel, idx) => {
+                const isShopChannel = idx === 0;
+                return (
+                  <Tap key={channel.id} onPress={() => openChannel(channel)}
+                    style={[S.convCard, {
+                      backgroundColor: isShopChannel ? C.accent + '0D' : C.card,
+                      borderColor: isShopChannel ? C.accent + '45' : C.cardBorder,
+                    }]}>
+                    <View style={[S.convAvatar, { backgroundColor: isShopChannel ? C.accent + '22' : C.accent + '12' }]}>
+                      {isShopChannel
+                        ? <Users color={C.accent} size={20} strokeWidth={2.5} />
+                        : <Hash color={C.accent} size={20} strokeWidth={2.5} />
+                      }
                     </View>
                     <View style={{ flex: 1 }}>
                       <View style={S.convTop}>
-                        <Text style={[S.convName, { color: C.text }]}>{channel.name}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 }}>
+                          <Text style={[S.convName, { color: C.text, fontWeight: isShopChannel ? '800' : '600' }]}>
+                            {isShopChannel ? 'Shop Channel' : channel.name}
+                          </Text>
+                          {isShopChannel && (
+                            <View style={{ backgroundColor: C.accent + '20', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 }}>
+                              <Text style={{ fontSize: 9, fontWeight: '800', color: C.accent, letterSpacing: 0.6 }}>ALL BARBERS</Text>
+                            </View>
+                          )}
+                        </View>
                         {channel.last_message_at && <Text style={[S.convTime, { color: C.text3 }]}>{msgTime(channel.last_message_at)}</Text>}
                       </View>
                       <Text style={[S.convPreview, { color: C.text2 }]} numberOfLines={1}>
                         {channel.last_message || channel.description || 'No messages yet'}
                       </Text>
                     </View>
-                  </TouchableOpacity>
-                ))}
-              </>
+                  </Tap>
+                );
+              })
             )}
 
             {/* DIRECT MESSAGES section */}
-            {barberConvs.length > 0 && (
-              <>
-                <View style={[S.sectionHeader, { marginTop: teamChannels.length > 0 ? 8 : 0 }]}>
-                  <Users color={C.text3} size={12} strokeWidth={2.5} />
-                  <Text style={[S.sectionLabel, { color: C.text3 }]}>DIRECT MESSAGES</Text>
-                </View>
-                {barberConvs.map(conv => (
-                  <TouchableOpacity key={conv.id} onPress={() => openBarberDM(conv)}
-                    style={[S.convCard, { backgroundColor: C.card, borderColor: C.cardBorder }]}
-                    activeOpacity={0.8}>
-                    <View style={[S.convAvatar, { backgroundColor: C.accent + '18' }]}>
-                      <Text style={[S.convAvatarTxt, { color: C.accent }]}>
-                        {(conv.other_barber.display_name || 'T').charAt(0).toUpperCase()}
-                      </Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <View style={S.convTop}>
-                        <Text style={[S.convName, { color: C.text }]}>{conv.other_barber.display_name}</Text>
-                        {conv.last_message_at && <Text style={[S.convTime, { color: C.text3 }]}>{msgTime(conv.last_message_at)}</Text>}
-                      </View>
-                      <Text style={[S.convPreview, { color: C.text2 }]} numberOfLines={1}>
-                        {conv.last_message || 'No messages yet'}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
-              </>
-            )}
-
-            {/* Empty state */}
-            {teamChannels.length === 0 && barberConvs.length === 0 && (
-              <View style={S.emptyState}>
-                <Users color={C.text3} size={40} />
-                <Text style={[S.emptyTitle, { color: C.text2 }]}>No team chats yet</Text>
-                <Text style={[S.emptySub, { color: C.text3 }]}>Channels will appear here once your team is set up</Text>
+            <View style={[S.sectionHeader, { marginTop: 12 }]}>
+              <Users color={C.text3} size={12} strokeWidth={2.5} />
+              <Text style={[S.sectionLabel, { color: C.text3, flex: 1 }]}>DIRECT MESSAGES</Text>
+              <TouchableOpacity onPress={openNewDMPicker} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Plus color={C.accent} size={13} strokeWidth={3} />
+                <Text style={{ fontSize: 11, fontWeight: '700', color: C.accent }}>New DM</Text>
+              </TouchableOpacity>
+            </View>
+            {barberConvs.length === 0 ? (
+              <View style={[S.convCard, { backgroundColor: C.card, borderColor: C.cardBorder, flexDirection: 'column', gap: 4 }]}>
+                <Text style={[S.convName, { color: C.text2, textAlign: 'center' }]}>No DMs yet</Text>
+                <Text style={[S.convPreview, { color: C.text3, flex: 0, textAlign: 'center' }]}>Tap "New DM" to message a teammate</Text>
               </View>
+            ) : (
+              barberConvs.map(conv => (
+                <Tap key={conv.id} onPress={() => openBarberDM(conv)}
+                  style={[S.convCard, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+                  <View style={[S.convAvatar, { backgroundColor: C.accent + '18' }]}>
+                    <Text style={[S.convAvatarTxt, { color: C.accent }]}>
+                      {(conv.other_barber.display_name || 'T').charAt(0).toUpperCase()}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={S.convTop}>
+                      <Text style={[S.convName, { color: C.text }]}>{conv.other_barber.display_name}</Text>
+                      {conv.last_message_at && <Text style={[S.convTime, { color: C.text3 }]}>{msgTime(conv.last_message_at)}</Text>}
+                    </View>
+                    <Text style={[S.convPreview, { color: C.text2 }]} numberOfLines={1}>
+                      {conv.last_message || 'No messages yet'}
+                    </Text>
+                  </View>
+                </Tap>
+              ))
             )}
           </>
         )}
       </ScrollView>
+
+      {/* ── New DM bottom sheet ──────────────────────────────────── */}
+      {showNewDMPicker && (
+        <View style={[S.sheetOverlay]}>
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setShowNewDMPicker(false)} />
+          <View style={[S.sheet, { backgroundColor: C.bg, paddingBottom: insets.bottom + 24 }]}>
+            <View style={[S.sheetHandle, { backgroundColor: C.border }]} />
+            <View style={S.sheetTitleRow}>
+              <Text style={[S.sheetTitle, { color: C.text }]}>Start a DM</Text>
+              <TouchableOpacity onPress={() => setShowNewDMPicker(false)} style={[S.sheetClose, { backgroundColor: C.bg2 }]}>
+                <X color={C.text3} size={16} strokeWidth={2.5} />
+              </TouchableOpacity>
+            </View>
+            {teamMembers.length === 0 ? (
+              <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+                <ActivityIndicator color={C.accent} />
+                <Text style={{ color: C.text3, marginTop: 12, fontSize: 13 }}>Loading team members…</Text>
+              </View>
+            ) : (
+              teamMembers.map((member, idx) => (
+                <TouchableOpacity key={member.id} onPress={() => startNewDM(member.id, member.name)}
+                  style={[S.sheetMember, { borderBottomColor: idx < teamMembers.length - 1 ? C.border : 'transparent' }]}
+                  activeOpacity={0.7}>
+                  <View style={[S.sheetMemberAvatar, { backgroundColor: C.accent + '18' }]}>
+                    <Text style={{ fontSize: 18, fontWeight: '900', color: C.accent }}>{member.name.charAt(0).toUpperCase()}</Text>
+                  </View>
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: C.text }}>{member.name}</Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -803,10 +943,12 @@ export default function BarberMessages() {
 const S = StyleSheet.create({
   container:    { flex: 1 },
   loader:       { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  titleRow:     { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 10, borderBottomWidth: 0 },
+  titleRow:     { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 10, borderBottomWidth: 0 },
+  titleBackBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginRight: 8 },
   title:        { fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
-  tabRow:       { flexDirection: 'row', borderBottomWidth: 1 },
-  tabBtn:       { flex: 1, alignItems: 'center', paddingVertical: 12 },
+  tabWrap:      { paddingHorizontal: 16, paddingBottom: 4 },
+  tabRow:       { flexDirection: 'row', borderWidth: 1, borderRadius: 18, padding: 4 },
+  tabBtn:       { flex: 1, alignItems: 'center', paddingVertical: 11, borderRadius: 14, borderWidth: 1, borderColor: 'transparent' },
   tabLabel:     { fontSize: 14, fontWeight: '700' },
   scroll:       { paddingHorizontal: 16, paddingTop: 12 },
   sectionHeader:{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 4, paddingBottom: 8, paddingTop: 4 },
@@ -826,10 +968,13 @@ const S = StyleSheet.create({
   unreadTxt:    { color: '#fff', fontSize: 10, fontWeight: '800' },
   chatHeader:   { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
   backBtn:      { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
+  chatHeroTap:  { flex: 1, borderWidth: 1, borderRadius: 18, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   chatAvatar:   { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   chatAvatarTxt:{ fontWeight: '900', fontSize: 16 },
   chatName:     { fontWeight: '700', fontSize: 15, flex: 1 },
   chatSub:      { fontSize: 12 },
+  chatHeroPill: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
+  chatHeroPillTxt: { fontSize: 11, fontWeight: '700' },
   msgList:      { paddingHorizontal: 14, paddingVertical: 14, gap: 8 },
   emptyChat:    { alignItems: 'center', paddingVertical: 40, gap: 10 },
   emptyChatTxt: { fontSize: 15, fontWeight: '700' },
@@ -837,7 +982,16 @@ const S = StyleSheet.create({
   bubble:       { maxWidth: '78%', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10 },
   bubbleTxt:    { fontSize: 14, lineHeight: 20 },
   bubbleTime:   { fontSize: 10, marginTop: 3 },
-  inputRow:     { paddingHorizontal: 14, paddingTop: 10, borderTopWidth: 1, flexDirection: 'row', alignItems: 'flex-end', gap: 9 },
-  input:        { flex: 1, borderRadius: 20, paddingHorizontal: 15, paddingVertical: 10, fontSize: 14, maxHeight: 120, borderWidth: 1, lineHeight: 20 },
+  inputRow:     { paddingHorizontal: 14, paddingTop: 10, borderTopWidth: 1 },
+  inputShell:   { flexDirection: 'row', alignItems: 'flex-end', gap: 10, borderRadius: 22, borderWidth: 1, paddingLeft: 14, paddingRight: 8, paddingTop: 8, paddingBottom: 8 },
+  input:        { flex: 1, fontSize: 14, maxHeight: 120, lineHeight: 20, paddingTop: 4, paddingBottom: 4 },
   sendBtn:      { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
+  sheetOverlay:   { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)', zIndex: 100, justifyContent: 'flex-end' },
+  sheet:          { borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 10 },
+  sheetHandle:    { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+  sheetTitleRow:  { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  sheetTitle:     { fontSize: 18, fontWeight: '800', flex: 1 },
+  sheetClose:     { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  sheetMember:    { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, borderBottomWidth: 1 },
+  sheetMemberAvatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
 });

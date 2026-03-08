@@ -12,6 +12,7 @@ import { getBarberProfile } from '@/lib/barber';
 import { getActiveClientBinding } from '@/lib/clientSync';
 import { useTheme } from '@/lib/theme';
 import { router } from 'expo-router';
+import AnimatedCounter from '@/components/ui/AnimatedCounter';
 
 type RewardType = 'points' | 'discount_percent' | 'cash_fixed' | 'cash_percent_service';
 type ReferralTier = { id: string; name: string; reward_type: RewardType; min_conversions: number };
@@ -271,7 +272,7 @@ export default function ReferScreen() {
                 { num: stats.pending,   label: 'Pending',   tone: TONES.amber   },
               ].map(({ num, label, tone }) => (
                 <View key={label} style={[S.miniStat, { backgroundColor: tone.bg, borderColor: tone.border }]}>
-                  <Text style={[S.miniStatNum, { color: tone.icon }]}>{num}</Text>
+                  <AnimatedCounter value={num} style={{ fontSize: 20, fontWeight: '900', letterSpacing: -0.5, color: tone.icon }} />
                   <Text style={[S.miniStatLbl, { color: tone.icon }]}>{label}</Text>
                 </View>
               ))}

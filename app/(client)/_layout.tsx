@@ -206,9 +206,11 @@ export default function ClientLayout() {
         <Tabs.Screen name="refer"    options={{ title: 'Refer' }} />
         <Tabs.Screen name="loyalty"  options={{ title: 'Rewards' }} />
         <Tabs.Screen name="messages" options={{ title: 'Chat' }} />
-        <Tabs.Screen name="settings" options={{ href: null }} />
-        <Tabs.Screen name="discover" options={{ href: null }} />
-        <Tabs.Screen name="history"  options={{ href: null }} />
+        <Tabs.Screen name="settings"       options={{ href: null }} />
+        <Tabs.Screen name="discover"       options={{ href: null }} />
+        <Tabs.Screen name="history"        options={{ href: null }} />
+        <Tabs.Screen name="barber-profile" options={{ href: null }} />
+        <Tabs.Screen name="profile"        options={{ href: null }} />
       </Tabs>
     </View>
   );

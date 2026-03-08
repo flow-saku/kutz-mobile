@@ -258,8 +258,8 @@ export default function BarberSettings() {
           // Use the already-live Supabase barber dashboard URL.
           // expo-web-browser opens a modal — when Stripe redirects here the user
           // just taps Done to close it. No custom domain needed.
-          return_url:  `${SUPABASE_URL}/functions/v1/barber-dashboard`,
-          refresh_url: `${SUPABASE_URL}/functions/v1/barber-dashboard`,
+          return_url:  `${SUPABASE_URL}/functions/v1/barber-dashboard?stripe_return=1`,
+          refresh_url: `${SUPABASE_URL}/functions/v1/barber-dashboard?stripe_return=1`,
         }),
       });
 
@@ -312,7 +312,14 @@ export default function BarberSettings() {
         <Animated.View style={{ opacity: fade, transform: [{ translateY: slide }], gap: 24 }}>
 
           {/* ── Profile hero ── */}
-          <View style={[S.profileHero, { backgroundColor: C.card, borderColor: C.cardBorder }]}>
+          <TouchableOpacity
+            onPress={() => router.push('/(barber)/profile')}
+            activeOpacity={0.85}
+            style={[S.profileHero, { backgroundColor: C.card, borderColor: C.cardBorder }]}
+          >
+            <View style={{ position: 'absolute', top: 14, right: 14 }}>
+              <ChevronRight color={C.text3} size={16} />
+            </View>
             <View style={[S.avatarRing, { borderColor: `${C.accent}40` }]}>
               <View style={[S.avatar, { backgroundColor: `${C.accent}18` }]}>
                 <Text style={[S.avatarTxt, { color: C.accent }]}>{initials}</Text>
@@ -422,7 +429,11 @@ export default function BarberSettings() {
                 <Text style={[S.heroStatLbl, { color: C.text3 }]}>Shop</Text>
               </View>
             </View>
-          </View>
+
+            <View style={[{ marginTop: 4, paddingTop: 12, borderTopWidth: 1, borderTopColor: C.border, width: '100%', alignItems: 'center' }]}>
+              <Text style={{ fontSize: 12, color: C.accent, fontWeight: '700' }}>View full profile →</Text>
+            </View>
+          </TouchableOpacity>
 
           {/* ── Appearance ── */}
           <View>

@@ -77,6 +77,7 @@ Deno.serve(async (req: Request) => {
         ...(profile?.email ? { email: profile.email } : {}),
         'business_type': 'individual',
         'settings[payouts][schedule][interval]': 'weekly',
+        'settings[payouts][schedule][weekly_anchor]': 'friday',
       });
 
       accountId = account.id;
@@ -88,13 +89,25 @@ Deno.serve(async (req: Request) => {
         .eq('id', profileId);
 
       if (updateError) throw updateError;
-    } else if (profile?.stripe_onboarding_complete) {
-      // Already fully onboarded — return the dashboard link instead
-      const loginLink = await stripePost(`/accounts/${accountId}/login_links`, {});
-      return new Response(
-        JSON.stringify({ url: loginLink.url, account_id: accountId, already_connected: true }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      );
+    } else {
+      // Account exists — sync latest status from Stripe (in case webhook hasn't fired yet)
+      const account = await stripeGet(`/accounts/${accountId}`);
+      if (account.charges_enabled || account.details_submitted) {
+        await supabase.from('profiles').update({
+          stripe_charges_enabled:     account.charges_enabled ?? false,
+          stripe_payouts_enabled:     account.payouts_enabled ?? false,
+          stripe_onboarding_complete: account.details_submitted ?? false,
+        }).eq('id', profileId);
+      }
+
+      if (account.details_submitted) {
+        // Fully onboarded — return the dashboard link
+        const loginLink = await stripePost(`/accounts/${accountId}/login_links`, {});
+        return new Response(
+          JSON.stringify({ url: loginLink.url, account_id: accountId, already_connected: true }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
     }
 
     // 3. Create Account Link for onboarding

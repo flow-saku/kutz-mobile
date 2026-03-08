@@ -46,6 +46,18 @@
         {
           "locationWhenInUsePermission": "Used to find barbershops near you."
         }
+      ],
+      [
+        "@stripe/stripe-react-native",
+        {
+          "enableGooglePay": true
+        }
+      ],
+      [
+        "@stripe/stripe-terminal-react-native",
+        {
+          "tapToPayEnabled": true
+        }
       ]
     ]
   }

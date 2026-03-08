@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
 import { resolveBarberScope } from '@/lib/barber';
 import { format } from 'date-fns';
+import AnimatedCounter from '@/components/ui/AnimatedCounter';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 const TIERS = [
@@ -311,14 +312,18 @@ export default function BarberClients() {
                 {/* Stats row */}
                 <View style={S.heroStats}>
                   {[
-                    { val: String(selected.visit_count), lbl: 'Visits', color: C.accent },
-                    { val: String(selected.pointsBalance), lbl: 'Points', color: '#d97706' },
-                    { val: selected.average_spend != null ? `$${Math.round(Number(selected.average_spend))}` : '—', lbl: 'Avg Spend', color: '#16a34a' },
-                    { val: riskDays != null ? `${riskDays}d` : '—', lbl: 'Since Visit', color: riskDays != null && riskDays >= 60 ? '#ef4444' : C.text2 },
-                  ].map(({ val, lbl, color }, i, arr) => (
+                    { val: selected.visit_count, lbl: 'Visits', color: C.accent, prefix: '' },
+                    { val: selected.pointsBalance, lbl: 'Points', color: '#d97706', prefix: '' },
+                    { val: selected.average_spend != null ? Math.round(Number(selected.average_spend)) : -1, lbl: 'Avg Spend', color: '#16a34a', prefix: '$' },
+                    { val: riskDays ?? -1, lbl: 'Since Visit', color: riskDays != null && riskDays >= 60 ? '#ef4444' : C.text2, prefix: '' },
+                  ].map(({ val, lbl, color, prefix }, i, arr) => (
                     <React.Fragment key={lbl}>
                       <View style={S.heroStat}>
-                        <Text style={[S.heroStatVal, { color }]}>{val}</Text>
+                        {val >= 0 ? (
+                          <AnimatedCounter value={val} prefix={prefix} suffix={lbl === 'Since Visit' ? 'd' : ''} style={{ fontSize: 18, fontWeight: '900', letterSpacing: -0.3, color }} />
+                        ) : (
+                          <Text style={[S.heroStatVal, { color }]}>—</Text>
+                        )}
                         <Text style={[S.heroStatLbl, { color: C.text3 }]}>{lbl}</Text>
                       </View>
                       {i < arr.length - 1 && <View style={[S.heroStatDiv, { backgroundColor: C.border }]} />}
@@ -645,13 +650,13 @@ export default function BarberClients() {
       {clients.length > 0 && (
         <View style={[S.statsStrip, { borderBottomColor: C.border }]}>
           {[
-            { val: stats.newMonth,  lbl: 'NEW 30D' },
-            { val: stats.active30,  lbl: 'ACTIVE 30D' },
-            { val: stats.avgVisits, lbl: 'AVG VISITS' },
-          ].map(({ val, lbl }, i, arr) => (
+            { val: stats.newMonth,  lbl: 'NEW 30D', color: C.accent },
+            { val: stats.active30,  lbl: 'ACTIVE 30D', color: '#16a34a' },
+            { val: stats.avgVisits, lbl: 'AVG VISITS', color: C.text },
+          ].map(({ val, lbl, color }, i, arr) => (
             <React.Fragment key={lbl}>
               <View style={S.statStripItem}>
-                <Text style={[S.statStripVal, { color: C.text }]}>{val}</Text>
+                <AnimatedCounter value={val} style={{ fontSize: 20, fontWeight: '900', letterSpacing: -0.3, color }} />
                 <Text style={[S.statStripLbl, { color: C.text3 }]}>{lbl}</Text>
               </View>
               {i < arr.length - 1 && <View style={[S.statStripDiv, { backgroundColor: C.border }]} />}

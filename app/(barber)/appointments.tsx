@@ -2,18 +2,20 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
   RefreshControl, Alert, StyleSheet, StatusBar, Animated,
-  Pressable, FlatList,
+  Pressable, FlatList, PanResponder,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   CalendarDays, Clock, Check, X, Play, ChevronLeft, ChevronRight,
   Scissors, DollarSign, Users, TrendingUp, CheckCircle2, Timer, CreditCard,
 } from 'lucide-react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { supabase, SUPABASE_URL } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
 import { resolveBarberScope } from '@/lib/barber';
+import AnimatedCounter from '@/components/ui/AnimatedCounter';
 import {
   format, addDays, subDays, startOfWeek, isSameDay, isToday,
   addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval,
@@ -82,6 +84,8 @@ export default function BarberAppointments() {
   const [stripeReady, setStripeReady]   = useState(false);
   const [chargingId, setChargingId]     = useState<string | null>(null);
 
+  const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
+
   const green  = '#16a34a';
   const blue   = '#3b82f6';
   const yellow = '#f59e0b';
@@ -96,6 +100,22 @@ export default function BarberAppointments() {
     cancelled: { label: 'Cancelled',  color: C.text3, bg: `${C.text3}12` },
     no_show:   { label: 'No Show',    color: red,     bg: `${red}12` },
   };
+
+  // ── Day swipe navigation (PanResponder) ─────────────────────────────────────
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gs) => Math.abs(gs.dx) > 60 && Math.abs(gs.dy) < 40,
+      onPanResponderRelease: (_, gs) => {
+        if (gs.dx > 60) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setSelectedDate(d => subDays(d, 1));
+        } else if (gs.dx < -60) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setSelectedDate(d => addDays(d, 1));
+        }
+      },
+    })
+  ).current;
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
   const fetchAppointments = useCallback(async (ids: string[], date: Date, tmId?: string | null) => {
@@ -184,11 +204,19 @@ export default function BarberAppointments() {
 
   const updateStatus = async (aptId: string, newStatus: string) => {
     try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      Haptics.impactAsync(
+        newStatus === 'in_chair' ? Haptics.ImpactFeedbackStyle.Heavy :
+        newStatus === 'cancelled' ? Haptics.ImpactFeedbackStyle.Medium :
+        Haptics.ImpactFeedbackStyle.Medium
+      );
+      if (newStatus === 'completed') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
       await supabase.from('appointments').update({ status: newStatus }).eq('id', aptId);
 
       // ── Send cancellation email to client ───────────────────────────────────
       if (newStatus === 'cancelled') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
         const apt = appointments.find((a) => a.id === aptId);
         if (apt?.client_id) {
           const { data: profileData } = await supabase
@@ -311,6 +339,78 @@ export default function BarberAppointments() {
     </View>
   );
 
+  // ── Swipe actions ─────────────────────────────────────────────────────────
+  const renderRightAction = (apt: any, label: string, color: string, icon: React.ReactNode, onPress: () => void) => (
+    _progress: Animated.AnimatedInterpolation<number>,
+    dragX: Animated.AnimatedInterpolation<number>,
+  ) => {
+    const scale = dragX.interpolate({ inputRange: [-80, 0], outputRange: [1, 0.6], extrapolate: 'clamp' });
+    return (
+      <TouchableOpacity onPress={() => { swipeableRefs.current[apt.id]?.close(); onPress(); }}
+        style={[S.swipeAction, { backgroundColor: color }]} activeOpacity={0.85}>
+        <Animated.View style={[S.swipeInner, { transform: [{ scale }] }]}>
+          {icon}
+          <Text style={S.swipeTxt}>{label}</Text>
+        </Animated.View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderLeftAction = (apt: any, label: string, color: string, icon: React.ReactNode, onPress: () => void) => (
+    _progress: Animated.AnimatedInterpolation<number>,
+    dragX: Animated.AnimatedInterpolation<number>,
+  ) => {
+    const scale = dragX.interpolate({ inputRange: [0, 80], outputRange: [0.6, 1], extrapolate: 'clamp' });
+    return (
+      <TouchableOpacity onPress={() => { swipeableRefs.current[apt.id]?.close(); onPress(); }}
+        style={[S.swipeAction, { backgroundColor: color }]} activeOpacity={0.85}>
+        <Animated.View style={[S.swipeInner, { transform: [{ scale }] }]}>
+          {icon}
+          <Text style={S.swipeTxt}>{label}</Text>
+        </Animated.View>
+      </TouchableOpacity>
+    );
+  };
+
+  const getSwipeProps = (apt: any) => {
+    const props: any = {};
+    const stripeColor = '#635bff';
+
+    if (apt.status === 'pending') {
+      props.renderLeftActions = renderLeftAction(apt, 'Confirm', green, <Check color="#fff" size={22} />,
+        () => updateStatus(apt.id, 'confirmed'));
+      props.renderRightActions = renderRightAction(apt, 'Decline', red, <X color="#fff" size={22} />,
+        () => Alert.alert('Decline', 'Decline this appointment?', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Decline', style: 'destructive', onPress: () => updateStatus(apt.id, 'cancelled') },
+        ]));
+    } else if (apt.status === 'confirmed') {
+      props.renderLeftActions = renderLeftAction(apt, 'Start', orange, <Play color="#fff" size={22} />,
+        () => updateStatus(apt.id, 'in_chair'));
+      props.renderRightActions = renderRightAction(apt, 'Cancel', red, <X color="#fff" size={22} />,
+        () => Alert.alert('Cancel', 'Cancel this appointment?', [
+          { text: 'Keep', style: 'cancel' },
+          { text: 'Cancel', style: 'destructive', onPress: () => updateStatus(apt.id, 'cancelled') },
+        ]));
+    } else if (apt.status === 'in_chair') {
+      props.renderLeftActions = renderLeftAction(apt, 'Complete', green, <CheckCircle2 color="#fff" size={22} />,
+        () => updateStatus(apt.id, 'completed'));
+    } else if (apt.status === 'completed' && !apt.paid && Number(apt.price) > 0) {
+      props.renderLeftActions = renderLeftAction(apt, 'Charge', stripeColor, <CreditCard color="#fff" size={22} />,
+        () => router.push({
+          pathname: '/(barber)/charge',
+          params: {
+            client_name: apt.client_name ?? '',
+            client_id: apt.client_id ?? '',
+            appointment_id: apt.id,
+            prefill_amount: apt.price ? String(Number(apt.price).toFixed(2)) : '',
+          },
+        }));
+    }
+
+    return props;
+  };
+
   // ── Appointment card ───────────────────────────────────────────────────────
   const renderCard = (apt: any) => {
     const cfg      = STATUS[apt.status] ?? STATUS.confirmed;
@@ -318,10 +418,11 @@ export default function BarberAppointments() {
     const isActive = apt.status === 'in_chair';
     const isDone   = apt.status === 'completed';
     const isCancelled = apt.status === 'cancelled';
+    const swipeProps = getSwipeProps(apt);
+    const hasSwipe = swipeProps.renderLeftActions || swipeProps.renderRightActions;
 
-    return (
+    const card = (
       <View
-        key={apt.id}
         style={[S.aptCard, {
           backgroundColor: C.card,
           borderColor: isActive ? `${orange}50` : isDone ? `${green}30` : C.cardBorder,
@@ -366,10 +467,20 @@ export default function BarberAppointments() {
             </View>
           </View>
 
+          {/* Swipe hint */}
+          {hasSwipe && !isCancelled && (
+            <Text style={[S.swipeHint, { color: C.text3 }]}>
+              {apt.status === 'pending' ? '← Swipe right to confirm' :
+               apt.status === 'confirmed' ? '← Swipe right to start' :
+               apt.status === 'in_chair' ? '← Swipe right to complete' :
+               apt.status === 'completed' && !apt.paid ? '← Swipe to charge' : ''}
+            </Text>
+          )}
+
           {/* Notes */}
           {!!apt.notes && (
             <Text style={[S.aptNotes, { color: C.text3, borderColor: C.border }]} numberOfLines={1}>
-              💬 {apt.notes}
+              {apt.notes}
             </Text>
           )}
 
@@ -414,7 +525,7 @@ export default function BarberAppointments() {
 
           {apt.status === 'in_chair' && (() => {
             const paysAtShop = apt.payment_method === 'at_shop' || !apt.payment_method;
-            const needsCharge = paysAtShop && !apt.paid && Number(apt.price) > 0;
+            const needsCharge = paysAtShop && !apt.paid;
             const stripeColor = '#635bff';
             return (
               <View style={S.actions}>
@@ -437,7 +548,7 @@ export default function BarberAppointments() {
                   {needsCharge ? (
                     <>
                       <CreditCard color="#fff" size={15} strokeWidth={2.2} />
-                      <Text style={[S.actionTxt, { color: '#fff' }]}>Complete & Charge ${Number(apt.price).toFixed(0)}</Text>
+                      <Text style={[S.actionTxt, { color: '#fff' }]}>{Number(apt.price) > 0 ? `Complete & Charge $${Number(apt.price).toFixed(0)}` : 'Complete & Charge'}</Text>
                     </>
                   ) : (
                     <>
@@ -449,7 +560,7 @@ export default function BarberAppointments() {
                 {apt.paid && (
                   <View style={[S.actionBtn, { backgroundColor: `${green}18`, flex: 1 }]}>
                     <CheckCircle2 color={green} size={14} strokeWidth={2.2} />
-                    <Text style={[S.actionTxt, { color: green }]}>Paid ✓</Text>
+                    <Text style={[S.actionTxt, { color: green }]}>Paid</Text>
                   </View>
                 )}
               </View>
@@ -458,7 +569,7 @@ export default function BarberAppointments() {
 
           {apt.status === 'completed' && (() => {
             const paysAtShop = apt.payment_method === 'at_shop' || !apt.payment_method;
-            const needsCharge = paysAtShop && !apt.paid && Number(apt.price) > 0;
+            const needsCharge = paysAtShop && !apt.paid;
             if (needsCharge) return (
               <Tap
                 onPress={() => router.push({
@@ -472,7 +583,7 @@ export default function BarberAppointments() {
                 })}
                 style={[S.actionFullWide, { backgroundColor: '#635bff', marginTop: 8 }]}>
                 <CreditCard color="#fff" size={16} strokeWidth={2.5} />
-                <Text style={[S.actionTxt, { color: '#fff', fontSize: 14 }]}>Charge ${Number(apt.price).toFixed(0)}</Text>
+                <Text style={[S.actionTxt, { color: '#fff', fontSize: 14 }]}>{Number(apt.price) > 0 ? `Charge $${Number(apt.price).toFixed(0)}` : 'Charge'}</Text>
               </Tap>
             );
             if (apt.paid) return (
@@ -485,6 +596,21 @@ export default function BarberAppointments() {
           })()}
         </View>
       </View>
+    );
+
+    if (!hasSwipe) return <View key={apt.id}>{card}</View>;
+
+    return (
+      <Swipeable
+        key={apt.id}
+        ref={ref => { swipeableRefs.current[apt.id] = ref; }}
+        friction={2}
+        overshootLeft={false}
+        overshootRight={false}
+        {...swipeProps}
+      >
+        {card}
+      </Swipeable>
     );
   };
 
@@ -513,7 +639,7 @@ export default function BarberAppointments() {
       </View>
 
       {view === 'day' ? (
-        <>
+        <View style={{ flex: 1 }} {...panResponder.panHandlers}>
           {/* ── Week strip ── */}
           <View style={[S.weekWrap, { borderBottomColor: C.border }]}>
             <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedDate(d => subDays(d, 7)); }} style={S.weekArrow}>
@@ -545,24 +671,32 @@ export default function BarberAppointments() {
             </TouchableOpacity>
           </View>
 
-          {/* ── Stats strip ── */}
+          {/* ── Animated Stats strip ── */}
           {todayApts.length > 0 && (
             <View style={[S.statsStrip, { borderBottomColor: C.border }]}>
               {[
-                { val: String(todayApts.length),     lbl: 'Total',     color: C.text },
-                { val: String(confirmedApts.length), lbl: 'Confirmed', color: C.accent },
-                { val: String(inChairApts.length),   lbl: 'In Chair',  color: orange },
-                { val: String(completedApts.length), lbl: 'Done',      color: green },
-                ...(totalRevenue > 0 ? [{ val: `$${totalRevenue.toFixed(0)}`, lbl: 'Revenue', color: green }] : []),
+                { val: todayApts.length,     lbl: 'Total',     color: C.text },
+                { val: confirmedApts.length, lbl: 'Confirmed', color: C.accent },
+                { val: inChairApts.length,   lbl: 'In Chair',  color: orange },
+                { val: completedApts.length, lbl: 'Done',      color: green },
               ].map(({ val, lbl, color }, i, arr) => (
                 <React.Fragment key={lbl}>
                   <View style={S.statItem}>
-                    <Text style={[S.statVal, { color }]}>{val}</Text>
+                    <AnimatedCounter value={val} style={{ fontSize: 16, color }} />
                     <Text style={[S.statLbl, { color: C.text3 }]}>{lbl}</Text>
                   </View>
                   {i < arr.length - 1 && <View style={[S.statDivider, { backgroundColor: C.border }]} />}
                 </React.Fragment>
               ))}
+              {totalRevenue > 0 && (
+                <>
+                  <View style={[S.statDivider, { backgroundColor: C.border }]} />
+                  <View style={S.statItem}>
+                    <AnimatedCounter value={totalRevenue} prefix="$" style={{ fontSize: 16, color: green }} />
+                    <Text style={[S.statLbl, { color: C.text3 }]}>Revenue</Text>
+                  </View>
+                </>
+              )}
             </View>
           )}
 
@@ -594,7 +728,7 @@ export default function BarberAppointments() {
             }
             renderItem={({ item }) => renderCard(item)}
           />
-        </>
+        </View>
       ) : (
         /* ── Calendar view ── */
         <ScrollView
@@ -658,14 +792,14 @@ export default function BarberAppointments() {
             <Text style={[S.monthSummaryTitle, { color: C.text }]}>{format(calMonth, 'MMMM')} Overview</Text>
             <View style={S.monthStats}>
               {[
-                { icon: Users,      val: String(Object.values(dotMap).reduce((a, b) => a + b, 0)), lbl: 'Appointments', color: C.accent },
-                { icon: TrendingUp, val: String(Object.keys(dotMap).length), lbl: 'Active Days', color: green },
+                { icon: Users,      val: Object.values(dotMap).reduce((a, b) => a + b, 0), lbl: 'Appointments', color: C.accent },
+                { icon: TrendingUp, val: Object.keys(dotMap).length, lbl: 'Active Days', color: green },
               ].map(({ icon: Icon, val, lbl, color }) => (
                 <View key={lbl} style={[S.monthStat, { backgroundColor: C.bg2, borderColor: C.border }]}>
                   <View style={[S.monthStatIcon, { backgroundColor: `${color}18` }]}>
                     <Icon color={color} size={18} strokeWidth={2} />
                   </View>
-                  <Text style={[S.monthStatVal, { color: C.text }]}>{val}</Text>
+                  <AnimatedCounter value={val} style={{ fontSize: 22, color: C.text }} />
                   <Text style={[S.monthStatLbl, { color: C.text3 }]}>{lbl}</Text>
                 </View>
               ))}
@@ -740,6 +874,7 @@ const S = StyleSheet.create({
   metaChip:     { flexDirection: 'row', alignItems: 'center', gap: 5 },
   metaTxt:      { fontSize: 12, fontWeight: '600' },
   aptNotes:     { fontSize: 11, paddingTop: 8, marginTop: 4, borderTopWidth: 1, paddingBottom: 2, fontStyle: 'italic' },
+  swipeHint:    { fontSize: 10, fontWeight: '500', marginTop: 2, fontStyle: 'italic' },
 
   // Actions
   actions:        { flexDirection: 'row', gap: 8, marginTop: 12 },
@@ -747,6 +882,11 @@ const S = StyleSheet.create({
   actionSmall:    { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 14 },
   actionFullWide: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 14, marginTop: 12 },
   actionTxt:      { fontSize: 14, fontWeight: '800' },
+
+  // Swipe actions
+  swipeAction: { width: 80, justifyContent: 'center', alignItems: 'center', borderRadius: 20, marginBottom: 12 },
+  swipeInner:  { alignItems: 'center', justifyContent: 'center', gap: 4 },
+  swipeTxt:    { color: '#fff', fontSize: 11, fontWeight: '800' },
 
   // Calendar
   calScroll:    { paddingHorizontal: 16, paddingTop: 16 },

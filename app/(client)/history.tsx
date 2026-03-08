@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, RefreshControl,
-  StyleSheet, StatusBar, Animated, Platform, ActivityIndicator,
+  StyleSheet, StatusBar, Animated, Platform, ActivityIndicator, Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -63,60 +63,65 @@ function AppointmentCard({ appt, C, isDark, onRebook }: {
   try { dateStr = format(parseISO(appt.date), 'EEE, MMM d, yyyy'); } catch {}
 
   return (
-    <Animated.View style={[S.apptCard, { backgroundColor: C.card, borderColor: C.cardBorder, transform: [{ scale }] }]}>
-      {/* Color left stripe */}
-      <View style={[S.stripe, { backgroundColor: cfg.color }]} />
+    <Pressable
+      onPressIn={() => Animated.spring(scale, { toValue: 0.975, useNativeDriver: true, tension: 600, friction: 32 }).start()}
+      onPressOut={() => Animated.spring(scale, { toValue: 1, useNativeDriver: true, tension: 400, friction: 26 }).start()}
+    >
+      <Animated.View style={[S.apptCard, { backgroundColor: C.card, borderColor: C.cardBorder, transform: [{ scale }] }]}>
+        {/* Color left stripe */}
+        <View style={[S.stripe, { backgroundColor: cfg.color }]} />
 
-      <View style={S.apptContent}>
-        {/* Top row: service + status badge */}
-        <View style={S.apptTopRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={[S.serviceName, { color: C.text }]} numberOfLines={1}>
-              {appt.service_name || 'Haircut'}
-            </Text>
-            {appt.team_member_name ? (
-              <Text style={[S.teamMember, { color: C.text3 }]}>with {appt.team_member_name}</Text>
-            ) : null}
+        <View style={S.apptContent}>
+          {/* Top row: service + status badge */}
+          <View style={S.apptTopRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={[S.serviceName, { color: C.text }]} numberOfLines={1}>
+                {appt.service_name || 'Haircut'}
+              </Text>
+              {appt.team_member_name ? (
+                <Text style={[S.teamMember, { color: C.text3 }]}>with {appt.team_member_name}</Text>
+              ) : null}
+            </View>
+            <View style={[S.statusBadge, { backgroundColor: cfg.bg }]}>
+              <StatusIcon size={11} color={cfg.color} strokeWidth={2.5} />
+              <Text style={[S.statusLabel, { color: cfg.color }]}>{cfg.label}</Text>
+            </View>
           </View>
-          <View style={[S.statusBadge, { backgroundColor: cfg.bg }]}>
-            <StatusIcon size={11} color={cfg.color} strokeWidth={2.5} />
-            <Text style={[S.statusLabel, { color: cfg.color }]}>{cfg.label}</Text>
+
+          {/* Date + time */}
+          <View style={S.apptMeta}>
+            <View style={S.metaItem}>
+              <Calendar size={13} color={C.text3} strokeWidth={2} />
+              <Text style={[S.metaText, { color: C.text2 }]}>{dateStr}</Text>
+            </View>
+            <View style={S.metaItem}>
+              <Clock size={13} color={C.text3} strokeWidth={2} />
+              <Text style={[S.metaText, { color: C.text2 }]}>
+                {fmt12(appt.start_time)}
+                {appt.duration_minutes ? ` · ${appt.duration_minutes}min` : ''}
+              </Text>
+            </View>
+          </View>
+
+          {/* Bottom row: price + rebook */}
+          <View style={S.apptBottomRow}>
+            {appt.price != null ? (
+              <Text style={[S.priceText, { color: C.text }]}>${appt.price}</Text>
+            ) : <View />}
+            {isRebookable && (
+              <TouchableOpacity
+                style={[S.rebookBtn, { backgroundColor: isDark ? 'rgba(168,85,247,0.15)' : 'rgba(168,85,247,0.1)', borderColor: 'rgba(168,85,247,0.3)' }]}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onRebook(appt); }}
+                activeOpacity={0.7}
+              >
+                <RotateCcw size={11} color="#a855f7" strokeWidth={2.5} />
+                <Text style={S.rebookBtnText}>Rebook</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
-
-        {/* Date + time */}
-        <View style={S.apptMeta}>
-          <View style={S.metaItem}>
-            <Calendar size={13} color={C.text3} strokeWidth={2} />
-            <Text style={[S.metaText, { color: C.text2 }]}>{dateStr}</Text>
-          </View>
-          <View style={S.metaItem}>
-            <Clock size={13} color={C.text3} strokeWidth={2} />
-            <Text style={[S.metaText, { color: C.text2 }]}>
-              {fmt12(appt.start_time)}
-              {appt.duration_minutes ? ` · ${appt.duration_minutes}min` : ''}
-            </Text>
-          </View>
-        </View>
-
-        {/* Bottom row: price + rebook */}
-        <View style={S.apptBottomRow}>
-          {appt.price != null ? (
-            <Text style={[S.priceText, { color: C.text }]}>${appt.price}</Text>
-          ) : <View />}
-          {isRebookable && (
-            <TouchableOpacity
-              style={[S.rebookBtn, { backgroundColor: isDark ? 'rgba(168,85,247,0.15)' : 'rgba(168,85,247,0.1)', borderColor: 'rgba(168,85,247,0.3)' }]}
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onRebook(appt); }}
-              activeOpacity={0.7}
-            >
-              <RotateCcw size={11} color="#a855f7" strokeWidth={2.5} />
-              <Text style={S.rebookBtnText}>Rebook</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-    </Animated.View>
+      </Animated.View>
+    </Pressable>
   );
 }
 

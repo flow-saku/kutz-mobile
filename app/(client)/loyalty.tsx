@@ -15,6 +15,7 @@ import { getActiveClientBinding } from '@/lib/clientSync';
 import { format } from 'date-fns';
 import { router } from 'expo-router';
 import { useTheme } from '@/lib/theme';
+import AnimatedCounter from '@/components/ui/AnimatedCounter';
 
 const TIERS = [
   // New — grey (0 visits)
@@ -261,19 +262,19 @@ export default function LoyaltyScreen() {
             </View>
 
             {/* Big points number */}
-            <Text style={[S.heroPoints, { color: C.text }]}>{pointsBalance.toLocaleString()}</Text>
+            <AnimatedCounter value={pointsBalance} style={{ fontSize: 42, fontWeight: '900', letterSpacing: -1.5, color: C.text }} />
             <Text style={[S.heroPointsLabel, { color: C.text3 }]}>loyalty points</Text>
 
             {/* Stats row */}
             <View style={[S.heroStats, { borderTopColor: C.border }]}>
               {[
-                { label: 'Lifetime pts', value: lifetimePoints.toLocaleString(), tone: TONES.violet },
-                { label: 'Visits',       value: String(visitCount),               tone: TONES.blue   },
-                ...(nextReward ? [{ label: 'Pts to next', value: String(ptsToNext), tone: TONES.amber }] : []),
-              ].map(({ label, value, tone }, i, arr) => (
+                { label: 'Lifetime pts', val: lifetimePoints, tone: TONES.violet },
+                { label: 'Visits',       val: visitCount,     tone: TONES.blue   },
+                ...(nextReward ? [{ label: 'Pts to next', val: ptsToNext, tone: TONES.amber }] : []),
+              ].map(({ label, val, tone }, i, arr) => (
                 <React.Fragment key={label}>
                   <View style={S.heroStat}>
-                    <Text style={[S.heroStatVal, { color: tone.icon }]}>{value}</Text>
+                    <AnimatedCounter value={val} style={{ fontSize: 22, fontWeight: '900', letterSpacing: -0.5, color: tone.icon }} />
                     <Text style={[S.heroStatLbl, { color: C.text3 }]}>{label}</Text>
                   </View>
                   {i < arr.length - 1 && <View style={[S.heroStatDivider, { backgroundColor: C.border }]} />}

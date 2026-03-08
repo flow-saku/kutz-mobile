@@ -1,15 +1,20 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
-  Alert, StyleSheet, StatusBar, Animated, Pressable, Image, Easing,
+  Alert, StyleSheet, StatusBar, Animated, Pressable, Image, Easing, TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CalendarCheck, Clock, Scissors, ChevronLeft, ChevronRight, Check, MapPin, Users, CreditCard, Wallet, Store } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
-import { supabase } from '@/lib/supabase';
+import { supabase, SUPABASE_URL } from '@/lib/supabase';
 import { getBarberProfile } from '@/lib/barber';
 import { getActiveClientBinding } from '@/lib/clientSync';
+import {
+  initStripe,
+  initPaymentSheet,
+  presentPaymentSheet,
+} from '@stripe/stripe-react-native';
 import {
   format, addMonths, subMonths, startOfMonth, endOfMonth,
   eachDayOfInterval, startOfWeek, endOfWeek, isSameMonth, isSameDay, isBefore, isToday,
@@ -50,7 +55,7 @@ async function fireBookingAutomations(opts: {
         p_barber_id: barberId,
         p_client_id: clientId,
         p_message: confirmMsg,
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     // 2. Notify barber (in-app notification)
@@ -61,7 +66,7 @@ async function fireBookingAutomations(opts: {
       p_body: `${clientName} booked ${serviceName} on ${appointmentDate} at ${appointmentTime.slice(0, 5)}`,
       p_icon: 'calendar-check',
       p_link: '/calendar',
-    }).catch(() => {});
+    }).catch(() => { });
 
     // 3. Fetch & fire appointment_booked automations
     const { data: rpcData } = await (supabase as any).rpc('get_enabled_automations', {
@@ -106,13 +111,13 @@ async function fireBookingAutomations(opts: {
             p_client_id: clientId,
             p_content: msg,
             p_sender_type: 'barber',
-          }).catch(() => {});
+          }).catch(() => { });
         } else if (node.subtype === 'send_email' && clientEmail) {
           const subject = fillMsg(node.config?.subject || `Booking confirmed at ${shopName}`);
           const body = fillMsg(node.config?.body || node.config?.message || '');
           await supabase.functions.invoke('send-email', {
             body: { to: clientEmail, subject, html: body.replace(/\n/g, '<br/>'), text: body },
-          }).catch(() => {});
+          }).catch(() => { });
         } else if (node.subtype === 'send_real_sms' && clientEmail) {
           // Real SMS — send email as fallback since we don't store phone here
           const msg = fillMsg(node.config?.message || 'Hey {name}!');
@@ -123,7 +128,7 @@ async function fireBookingAutomations(opts: {
               html: msg.replace(/\n/g, '<br/>'),
               text: msg,
             },
-          }).catch(() => {});
+          }).catch(() => { });
         }
       }
     }
@@ -226,7 +231,40 @@ export default function RebookScreen() {
   const [clientEmail, setClientEmail] = useState<string | null>(null);
   const [barberEmail, setBarberEmail] = useState<string | null>(null);
   const [passFeesToClient, setPassFeesToClient] = useState(true);
+  const [workingHours, setWorkingHours] = useState<any[] | null>(null);
+  const [discountCodeInput, setDiscountCodeInput] = useState('');
+  const [appliedDiscount, setAppliedDiscount] = useState<{ id: string, code: string, type: 'percent' | 'fixed', value: number } | null>(null);
+  const [discountError, setDiscountError] = useState('');
+  const [applyingDiscount, setApplyingDiscount] = useState(false);
   const selectedRealTeamMember = selectedTeamMember.startsWith('owner:') ? '' : selectedTeamMember;
+
+  const applyDiscountCode = async () => {
+    if (!discountCodeInput.trim() || !barberId) return;
+    setApplyingDiscount(true);
+    setDiscountError('');
+    try {
+      const { data, error } = await supabase
+        .from('discount_codes')
+        .select('id, code, type, value, usage_limit, used_count, expires_at')
+        .eq('barber_id', barberId)
+        .ilike('code', discountCodeInput.trim())
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (error || !data) throw new Error('Invalid or inactive discount code');
+      if (data.usage_limit && data.used_count >= data.usage_limit) throw new Error('Code usage limit reached');
+      if (data.expires_at && new Date(data.expires_at) < new Date()) throw new Error('Code has expired');
+
+      setAppliedDiscount({ id: data.id, code: data.code, type: data.type as 'percent' | 'fixed', value: data.value });
+      setDiscountCodeInput('');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      setDiscountError(err.message);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setApplyingDiscount(false);
+    }
+  };
 
   // Slide animation between steps
   const slideAnim = useRef(new Animated.Value(0)).current;
@@ -272,10 +310,12 @@ export default function RebookScreen() {
           .eq('barber_id', binding.barberId).eq('is_active', true).order('price', { ascending: true }),
         getBarberProfile(binding.barberId),
         supabase.rpc('get_all_shop_staff', { p_barber_id: binding.barberId }),
-        supabase.from('profiles').select('email, pass_fees_to_client').or(`id.eq.${binding.barberId},user_id.eq.${binding.barberId}`).limit(1).maybeSingle(),
+        supabase.from('profiles').select('email, pass_fees_to_client, working_hours').or(`id.eq.${binding.barberId},user_id.eq.${binding.barberId}`).limit(1).maybeSingle(),
       ]);
       setBarberEmail((barberProfileRes.data as any)?.email ?? null);
       setPassFeesToClient((barberProfileRes.data as any)?.pass_fees_to_client ?? true);
+      const wh = (barberProfileRes.data as any)?.working_hours;
+      if (Array.isArray(wh) && wh.length === 7) setWorkingHours(wh);
 
       let servicesData = (svcsRes.data as any[]) ?? [];
       const p = profile as any;
@@ -307,7 +347,7 @@ export default function RebookScreen() {
           .eq('shop_owner_id', binding.barberId)
           .eq('is_active', true);
         for (const tm of ((byOwner.data as any[]) ?? []) as TeamMember[]) unique.set(tm.id, tm);
-      } catch {}
+      } catch { }
 
       const ownerMember: TeamMember = {
         id: `owner:${binding.barberId}`,
@@ -425,6 +465,17 @@ export default function RebookScreen() {
 
       const barberRows = ((barberRowsRaw as any[]) ?? []) as ScheduleRow[];
 
+      // Fallback: if barber_schedule has no active rows, use working_hours from profile
+      let effectiveBarberRows = barberRows;
+      if (barberRows.filter(r => r.is_active).length === 0 && workingHours) {
+        effectiveBarberRows = workingHours.map((wh: any) => ({
+          day_of_week: wh.day_of_week,
+          start_time: wh.start_time || '09:00',
+          end_time: wh.end_time || '17:00',
+          is_active: wh.is_active ?? false,
+        }));
+      }
+
       let teamRows = [] as ScheduleRow[];
       if (selectedRealTeamMember) {
         const primary = await supabase
@@ -458,7 +509,7 @@ export default function RebookScreen() {
       }
 
       const activeBarberDays = new Set(
-        barberRows.filter((r) => r.is_active && r.start_time && r.end_time).map((r) => r.day_of_week),
+        effectiveBarberRows.filter((r) => r.is_active && r.start_time && r.end_time).map((r) => r.day_of_week),
       );
       const activeTeamDays = new Set(
         teamRows.filter((r) => r.is_active && r.start_time && r.end_time).map((r) => r.day_of_week),
@@ -491,7 +542,7 @@ export default function RebookScreen() {
 
         if (isToday(day)) {
           let latestEnd = 0;
-          for (const r of barberRows) {
+          for (const r of effectiveBarberRows) {
             if (r.is_active && r.day_of_week === dow) latestEnd = Math.max(latestEnd, toMinutes(String(r.end_time).slice(0, 5)));
           }
           for (const r of teamRows) {
@@ -509,7 +560,7 @@ export default function RebookScreen() {
       console.error('fetchAvailableDatesForMonth error:', err);
       setAvailableDates({});
     }
-  }, [barberId, barberScopeIds, currentMonth, selectedRealTeamMember, selectedService, teamMembers]);
+  }, [barberId, barberScopeIds, currentMonth, selectedRealTeamMember, selectedService, teamMembers, workingHours]);
 
   const fetchSlots = useCallback(async (date: Date) => {
     if (!barberId || !selectedService) return;
@@ -523,7 +574,15 @@ export default function RebookScreen() {
       const { data: scheduleRows } = await supabase
         .from('barber_schedule').select('start_time, end_time, is_active')
         .in('barber_id', scopeIds).eq('day_of_week', dayNum);
-      const schedule = ((scheduleRows as any[]) ?? []).find((r: any) => r?.is_active) ?? null;
+      let schedule = ((scheduleRows as any[]) ?? []).find((r: any) => r?.is_active) ?? null;
+
+      // Fallback: use working_hours from profile if barber_schedule has no rows
+      if (!schedule && workingHours) {
+        const whDay = workingHours.find((wh: any) => wh.day_of_week === dayNum);
+        if (whDay?.is_active) {
+          schedule = { start_time: whDay.start_time || '09:00', end_time: whDay.end_time || '17:00', is_active: true };
+        }
+      }
 
       if (!schedule || !(schedule as any).is_active) {
         setLoadingSlots(false);
@@ -563,7 +622,7 @@ export default function RebookScreen() {
           if (row?.is_active && row?.start_time && row?.end_time) {
             teamWindow = { start: row.start_time, end: row.end_time };
           }
-        } catch {}
+        } catch { }
       }
 
       const slots: string[] = [];
@@ -637,20 +696,83 @@ export default function RebookScreen() {
       // Store the total the client will pay (includes booking fee for online payments)
       const chargeAmount = isOnlinePayment ? displayTotal : (selectedService.price ?? null);
 
+      // ── Online payment: collect via Stripe Payment Sheet ─────────────────
+      let paymentRecordId: string | null = null;
+      if (isOnlinePayment && chargeAmount && chargeAmount > 0) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error('Not authenticated');
+
+        const totalCents = Math.round(chargeAmount * 100);
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/create-booking-payment`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            barber_id: barberId,
+            amount_cents: totalCents,
+            currency: 'usd',
+            service_name: selectedService.name,
+            client_id: clientId,
+          }),
+        });
+        const piData = await res.json();
+        if (!res.ok || piData?.error) throw new Error(piData?.error || `Payment setup failed`);
+
+        paymentRecordId = piData.payment_record_id;
+
+        // Init Stripe SDK — no stripeAccountId because booking uses
+        // destination charges (PI lives on the platform, not connected account)
+        await initStripe({
+          publishableKey: piData.publishable_key,
+          merchantIdentifier: 'merchant.com.sakuholma.kutz',
+        });
+
+        // Init Payment Sheet
+        const { error: sheetError } = await initPaymentSheet({
+          paymentIntentClientSecret: piData.client_secret,
+          merchantDisplayName: 'Kutz',
+          style: isDark ? 'alwaysDark' : 'alwaysLight',
+          applePay: { merchantCountryCode: 'US' },
+          googlePay: { merchantCountryCode: 'US', testEnv: __DEV__ },
+        });
+        if (sheetError) throw new Error(sheetError.message);
+
+        // Present
+        const { error: payError } = await presentPaymentSheet();
+        if (payError) {
+          if (payError.code === 'Canceled') {
+            setBooking(false);
+            return; // Don't create appointment
+          }
+          throw new Error(payError.message);
+        }
+      }
+
+      const finalNotes = appliedDiscount ? `Used discount code: ${appliedDiscount.code}` : null;
+
+      // ── Insert appointment ──────────────────────────────────────────────
       const { error: insertError } = await supabase.from('appointments').insert({
-        barber_id:      barberId,
-        client_id:      clientId,
-        client_name:    clientName,
-        service_id:     selectedService.id,
-        date:           format(selectedDate, 'yyyy-MM-dd'),
-        start_time:     selectedSlot + ':00',
-        end_time:       endTime,
-        status:         'confirmed',
+        barber_id: barberId,
+        client_id: clientId,
+        client_name: clientName,
+        service_id: selectedService.id,
+        date: format(selectedDate, 'yyyy-MM-dd'),
+        start_time: selectedSlot + ':00',
+        end_time: endTime,
+        status: 'confirmed',
         team_member_id: selectedRealTeamMember || null,
-        price_charged:  chargeAmount,
+        price_charged: chargeAmount,
+        notes: finalNotes,
         payment_method: paymentMethod,
+        ...(isOnlinePayment ? { paid: true, payment_id: paymentRecordId } : {}),
       });
       if (insertError) throw insertError;
+
+      if (appliedDiscount) {
+        await supabase.rpc('increment_discount_usage', { p_barber_id: barberId, p_code: appliedDiscount.code });
+      }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       const dateStr = format(selectedDate, 'yyyy-MM-dd');
@@ -667,7 +789,7 @@ export default function RebookScreen() {
         appointmentDate: dateStr,
         appointmentTime: timeStr,
         shopName,
-      }).catch(() => {});
+      }).catch(() => { });
 
       // ── Send transactional confirmation email to client via Resend ──────────────────────
       if (clientEmail) {
@@ -688,7 +810,7 @@ export default function RebookScreen() {
             barberEmail: barberEmail ?? undefined,
             bookingLink: `https://app.kutz.io/c/${barberId}`,
           },
-        }).catch(() => {});
+        }).catch(() => { });
       }
 
       // ── Send new booking notification email to barber ─────────────────────────
@@ -704,7 +826,7 @@ export default function RebookScreen() {
             price: selectedService.price ?? undefined,
             clientEmail: clientEmail ?? undefined,
           },
-        }).catch(() => {});
+        }).catch(() => { });
       }
 
       // ── Schedule local reminder ────────────────────────────────────────────────
@@ -714,7 +836,7 @@ export default function RebookScreen() {
         selectedService.name,
         dateStr,
         timeStr,
-      ).catch(() => {});
+      ).catch(() => { });
       setBooked(true);
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -731,7 +853,7 @@ export default function RebookScreen() {
   const flowSteps = (['service', 'date', 'confirm'] as Step[]);
   const stepMeta: StepMeta[] = [
     { key: 'service', label: 'Preferences' },
-    { key: 'date',    label: 'Date & Time' },
+    { key: 'date', label: 'Date & Time' },
     { key: 'confirm', label: 'Confirm' },
   ];
   const stepIndex = flowSteps.indexOf(step);
@@ -745,24 +867,33 @@ export default function RebookScreen() {
     : (todayHoursText || 'Open hours unavailable');
 
   const PAYMENT_OPTIONS: { key: PaymentMethod; label: string; sub: string; Icon: any }[] = [
-    { key: 'apple_pay', label: 'Apple Pay',   sub: 'Pay instantly with Face ID', Icon: Wallet },
-    { key: 'card',      label: 'Card',         sub: 'Credit or debit card',       Icon: CreditCard },
-    { key: 'at_shop',   label: 'At the shop',  sub: 'Pay when you arrive',        Icon: Store },
+    { key: 'apple_pay', label: 'Apple Pay', sub: 'Pay instantly with Face ID', Icon: Wallet },
+    { key: 'card', label: 'Card', sub: 'Credit or debit card', Icon: CreditCard },
+    { key: 'at_shop', label: 'At the shop', sub: 'Pay when you arrive', Icon: Store },
   ];
 
   // Fee calculation — only applies when paying online AND barber has pass_fees_to_client on
   // Stripe: 2.9% + $0.30. Platform: 1%. Gross-up so barber always gets their full price.
-  const servicePrice    = Number(selectedService?.price ?? 0);
+  const servicePrice = Number(selectedService?.price ?? 0);
   const isOnlinePayment = paymentMethod === 'apple_pay' || paymentMethod === 'card';
-  const applyFees       = isOnlinePayment && passFeesToClient && servicePrice > 0;
-  const platformFeePct  = 0.01;
-  const stripePct       = 0.029;
-  const stripeFixed     = 0.30;
+  let discountedPrice = servicePrice;
+  if (appliedDiscount) {
+    if (appliedDiscount.type === 'percent') {
+      discountedPrice = Math.max(0, servicePrice - (servicePrice * (appliedDiscount.value / 100)));
+    } else {
+      discountedPrice = Math.max(0, servicePrice - appliedDiscount.value);
+    }
+  }
+
+  const applyFees = isOnlinePayment && passFeesToClient && discountedPrice > 0;
+  const platformFeePct = 0.01;
+  const stripePct = 0.029;
+  const stripeFixed = 0.30;
   const totalOnline = applyFees
-    ? Math.ceil(((servicePrice + stripeFixed) / (1 - stripePct - platformFeePct)) * 100) / 100
-    : servicePrice;
-  const bookingFee  = applyFees ? Math.round((totalOnline - servicePrice) * 100) / 100 : 0;
-  const displayTotal = applyFees ? totalOnline : servicePrice;
+    ? Math.ceil(((discountedPrice + stripeFixed) / (1 - stripePct - platformFeePct)) * 100) / 100
+    : discountedPrice;
+  const bookingFee = applyFees ? Math.round((totalOnline - discountedPrice) * 100) / 100 : 0;
+  const displayTotal = applyFees ? totalOnline : discountedPrice;
 
   if (loading) return (
     <View style={[S.loader, { backgroundColor: C.bg }]}><ActivityIndicator color={C.accent} size="large" /></View>
@@ -1114,9 +1245,9 @@ export default function RebookScreen() {
                       ? (teamMembers.find((t) => t.id === selectedTeamMember)?.display_name || 'Selected pro')
                       : 'Any Pro',
                   }] : []),
-                  { Icon: Scissors,      label: 'Service', value: selectedService?.name },
-                  { Icon: CalendarCheck, label: 'Date',    value: selectedDate ? format(selectedDate, 'EEEE, MMMM d') : '' },
-                  { Icon: Clock,         label: 'Time',    value: selectedSlot ? fmt12(selectedSlot) : '' },
+                  { Icon: Scissors, label: 'Service', value: selectedService?.name },
+                  { Icon: CalendarCheck, label: 'Date', value: selectedDate ? format(selectedDate, 'EEEE, MMMM d') : '' },
+                  { Icon: Clock, label: 'Time', value: selectedSlot ? fmt12(selectedSlot) : '' },
                   ...(shopName ? [{ Icon: MapPin, label: 'At', value: shopName + (shopCity ? ` · ${shopCity}` : '') }] : []),
                 ].map(({ Icon, label, value }, idx, arr) => (
                   <View key={label}>
@@ -1137,6 +1268,14 @@ export default function RebookScreen() {
                       <Text style={[S.confirmPriceLabel, { color: C.text2 }]}>Service price</Text>
                       <Text style={[S.confirmPriceLabel, { color: C.text2 }]}>${servicePrice.toFixed(2)}</Text>
                     </View>
+                    {appliedDiscount && (
+                      <View style={[S.confirmPriceRow, { marginTop: 6 }]}>
+                        <Text style={[S.confirmPriceLabel, { color: C.text, fontWeight: '600' }]}>Discount ({appliedDiscount.code})</Text>
+                        <Text style={[S.confirmPriceLabel, { color: C.accent, fontWeight: '600' }]}>
+                          -${(servicePrice - discountedPrice).toFixed(2)}
+                        </Text>
+                      </View>
+                    )}
                     {applyFees && bookingFee > 0 && (
                       <View style={[S.confirmPriceRow, { marginTop: 6 }]}>
                         <Text style={[S.confirmPriceLabel, { color: C.text3, fontSize: 12 }]}>Booking fee</Text>
@@ -1153,6 +1292,41 @@ export default function RebookScreen() {
                         Includes processing fee
                       </Text>
                     )}
+
+                    <View style={{ marginTop: 16 }}>
+                      {appliedDiscount ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 12, backgroundColor: C.bg2, borderRadius: 10, borderWidth: 1, borderColor: C.accent }}>
+                          <Text style={{ color: C.accent, fontWeight: '600' }}>{appliedDiscount.code} Applied</Text>
+                          <TouchableOpacity onPress={() => {
+                            setAppliedDiscount(null);
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          }}>
+                            <Text style={{ color: C.text3, fontWeight: '500' }}>Remove</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        <View>
+                          <View style={{ flexDirection: 'row', gap: 8 }}>
+                            <TextInput
+                              value={discountCodeInput}
+                              onChangeText={setDiscountCodeInput}
+                              placeholder="Have a discount code?"
+                              placeholderTextColor={C.text3}
+                              autoCapitalize="characters"
+                              style={{ flex: 1, backgroundColor: C.bg, borderRadius: 10, padding: 12, color: C.text, borderWidth: 1, borderColor: C.border }}
+                            />
+                            <TouchableOpacity
+                              onPress={applyDiscountCode}
+                              disabled={applyingDiscount || !discountCodeInput.trim()}
+                              style={{ backgroundColor: C.text, borderRadius: 10, paddingHorizontal: 16, justifyContent: 'center', opacity: !discountCodeInput.trim() ? 0.5 : 1 }}
+                            >
+                              {applyingDiscount ? <ActivityIndicator color={C.bg} size="small" /> : <Text style={{ color: C.bg, fontWeight: '600' }}>Apply</Text>}
+                            </TouchableOpacity>
+                          </View>
+                          {discountError ? <Text style={{ color: '#ef4444', fontSize: 12, marginTop: 4 }}>{discountError}</Text> : null}
+                        </View>
+                      )}
+                    </View>
                   </>
                 )}
               </View>
@@ -1197,9 +1371,9 @@ export default function RebookScreen() {
                 {booking
                   ? <ActivityIndicator color={accentText} />
                   : <>
-                      <CalendarCheck color={accentText} size={18} />
-                      <Text style={[S.confirmBtnText, { color: accentText }]}>Confirm Booking</Text>
-                    </>
+                    <CalendarCheck color={accentText} size={18} />
+                    <Text style={[S.confirmBtnText, { color: accentText }]}>Confirm Booking</Text>
+                  </>
                 }
               </Tile>
 
@@ -1217,22 +1391,22 @@ export default function RebookScreen() {
 
 const S = StyleSheet.create({
   container: { flex: 1 },
-  loader:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  loader: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   header: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
     borderBottomWidth: 1,
   },
-  title:     { fontSize: 22, fontWeight: '900', letterSpacing: -0.5 },
-  shopRow:   { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
+  title: { fontSize: 22, fontWeight: '900', letterSpacing: -0.5 },
+  shopRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
   shopLabel: { fontSize: 11 },
   stepMetaWrap: { alignItems: 'flex-end' },
-  stepBar:   { flexDirection: 'row', gap: 5, alignSelf: 'center' },
-  stepDash:  { width: 24, height: 3, borderRadius: 2 },
+  stepBar: { flexDirection: 'row', gap: 5, alignSelf: 'center' },
+  stepDash: { width: 24, height: 3, borderRadius: 2 },
   stepMetaText: { marginTop: 6, fontSize: 11, fontWeight: '600' },
 
-  scroll:   { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 120 },
+  scroll: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 120 },
   stepHint: { fontSize: 13, fontWeight: '600', marginBottom: 6, letterSpacing: 0.1 },
 
   // Professionals
@@ -1246,11 +1420,11 @@ const S = StyleSheet.create({
     backgroundColor: '#e5e7eb', alignItems: 'center',
     justifyContent: 'center', overflow: 'hidden',
   },
-  proAvatarImage:   { width: '100%', height: '100%' },
-  proAvatarFallback:{ width: 52, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  proAvatarImage: { width: '100%', height: '100%' },
+  proAvatarFallback: { width: 52, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   proAvatarInitial: { fontWeight: '800', fontSize: 18 },
-  proName:  { fontWeight: '700', fontSize: 14, textAlign: 'center' },
-  proRole:  { fontSize: 11, textTransform: 'capitalize', textAlign: 'center' },
+  proName: { fontWeight: '700', fontSize: 14, textAlign: 'center' },
+  proRole: { fontSize: 11, textTransform: 'capitalize', textAlign: 'center' },
   proHours: { fontSize: 9.5, textAlign: 'center', marginTop: 1, lineHeight: 12 },
 
   // Single availability card
@@ -1267,10 +1441,10 @@ const S = StyleSheet.create({
     borderRadius: 16, padding: 16, borderWidth: 1,
     flexDirection: 'row', alignItems: 'center', gap: 14,
   },
-  serviceIcon:  { width: 46, height: 46, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  serviceName:  { fontWeight: '700', fontSize: 15 },
-  serviceDesc:  { fontSize: 12, marginTop: 2 },
-  serviceMeta:  { fontSize: 12, marginTop: 4, fontWeight: '500' },
+  serviceIcon: { width: 46, height: 46, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  serviceName: { fontWeight: '700', fontSize: 15 },
+  serviceDesc: { fontSize: 12, marginTop: 2 },
+  serviceMeta: { fontSize: 12, marginTop: 4, fontWeight: '500' },
 
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 },
   backTxt: { fontSize: 14, fontWeight: '600' },
@@ -1285,21 +1459,21 @@ const S = StyleSheet.create({
     width: 34, height: 34, borderRadius: 10,
     alignItems: 'center', justifyContent: 'center', borderWidth: 1,
   },
-  calMonth:    { fontWeight: '800', fontSize: 15 },
-  calDayRow:   { flexDirection: 'row', marginBottom: 8 },
+  calMonth: { fontWeight: '800', fontSize: 15 },
+  calDayRow: { flexDirection: 'row', marginBottom: 8 },
   calDayLabel: { flex: 1, textAlign: 'center', fontSize: 11, fontWeight: '700' },
-  calGrid:     { flexDirection: 'row', flexWrap: 'wrap' },
-  calDay:      { width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 100 },
-  calDayToday:   {},
-  calDayDisabled:{ opacity: 0.3 },
-  calDayNum:     { fontSize: 13 },
+  calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  calDay: { width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 100 },
+  calDayToday: {},
+  calDayDisabled: { opacity: 0.3 },
+  calDayNum: { fontSize: 13 },
 
   // Time slots
-  slotsGrid:      { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  slotBtn:        { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 12, borderWidth: 1 },
-  slotTxt:        { fontWeight: '600', fontSize: 13 },
-  slotsLoading:   { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 20, justifyContent: 'center' },
-  slotsLoadingTxt:{ fontSize: 13 },
+  slotsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  slotBtn: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 12, borderWidth: 1 },
+  slotTxt: { fontWeight: '600', fontSize: 13 },
+  slotsLoading: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 20, justifyContent: 'center' },
+  slotsLoadingTxt: { fontSize: 13 },
   noSlotsBox: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     borderRadius: 12, borderWidth: 1, padding: 14,
@@ -1324,39 +1498,39 @@ const S = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   payLabel: { fontSize: 15 },
-  paySub:   { fontSize: 12, marginTop: 1 },
+  paySub: { fontSize: 12, marginTop: 1 },
   payCheck: {
     width: 22, height: 22, borderRadius: 11,
     alignItems: 'center', justifyContent: 'center',
   },
 
   // Empty
-  emptyState:    { alignItems: 'center', paddingVertical: 40, gap: 8 },
-  emptyIcon:     { width: 60, height: 60, borderRadius: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
-  emptyText:     { fontSize: 15, fontWeight: '700' },
-  emptySub:      { fontSize: 12, textAlign: 'center' },
-  pickAnotherBtn:{ marginTop: 8, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 10, borderWidth: 1 },
-  pickAnotherTxt:{ fontSize: 13, fontWeight: '700' },
+  emptyState: { alignItems: 'center', paddingVertical: 40, gap: 8 },
+  emptyIcon: { width: 60, height: 60, borderRadius: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
+  emptyText: { fontSize: 15, fontWeight: '700' },
+  emptySub: { fontSize: 12, textAlign: 'center' },
+  pickAnotherBtn: { marginTop: 8, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 10, borderWidth: 1 },
+  pickAnotherTxt: { fontSize: 13, fontWeight: '700' },
 
   // Confirm
   confirmCard: { borderRadius: 20, padding: 20, borderWidth: 1 },
   confirmTitle: { fontSize: 18, fontWeight: '900', letterSpacing: -0.3, marginBottom: 16 },
-  confirmDivider:{ height: 1, marginVertical: 12 },
-  confirmRow:   { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 4 },
+  confirmDivider: { height: 1, marginVertical: 12 },
+  confirmRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 4 },
   confirmRowDivider: { height: 1, marginLeft: 46, marginVertical: 4 },
-  confirmIconWrap:{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  confirmRowLabel:{ fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.6 },
-  confirmRowValue:{ fontWeight: '700', fontSize: 15, marginTop: 1 },
-  confirmPriceRow:{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  confirmPriceLabel:{ fontSize: 13 },
-  confirmPriceValue:{ fontWeight: '900', fontSize: 22, letterSpacing: -0.5 },
+  confirmIconWrap: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  confirmRowLabel: { fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.6 },
+  confirmRowValue: { fontWeight: '700', fontSize: 15, marginTop: 1 },
+  confirmPriceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  confirmPriceLabel: { fontSize: 13 },
+  confirmPriceValue: { fontWeight: '900', fontSize: 22, letterSpacing: -0.5 },
 
   confirmBtn: {
     borderRadius: 16, height: 56,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
   },
   confirmBtnText: { fontWeight: '800', fontSize: 16 },
-  confirmNote:    { fontSize: 12, textAlign: 'center', lineHeight: 17 },
+  confirmNote: { fontSize: 12, textAlign: 'center', lineHeight: 17 },
 
   // Success
   successRing: {
@@ -1368,12 +1542,12 @@ const S = StyleSheet.create({
     width: 80, height: 80, borderRadius: 40,
     alignItems: 'center', justifyContent: 'center', borderWidth: 1.5,
   },
-  successTitle:    { fontSize: 32, fontWeight: '900', letterSpacing: -1, marginBottom: 4 },
-  successService:  { fontSize: 16, fontWeight: '600', marginBottom: 24 },
-  successDetails:  { borderRadius: 16, padding: 16, gap: 10, width: '100%', borderWidth: 1, marginBottom: 16 },
-  successDetailRow:{ flexDirection: 'row', alignItems: 'center', gap: 10 },
-  successDetailTxt:{ fontSize: 14 },
-  successNote:     { fontSize: 12, textAlign: 'center', lineHeight: 18, marginBottom: 28, paddingHorizontal: 20 },
+  successTitle: { fontSize: 32, fontWeight: '900', letterSpacing: -1, marginBottom: 4 },
+  successService: { fontSize: 16, fontWeight: '600', marginBottom: 24 },
+  successDetails: { borderRadius: 16, padding: 16, gap: 10, width: '100%', borderWidth: 1, marginBottom: 16 },
+  successDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  successDetailTxt: { fontSize: 14 },
+  successNote: { fontSize: 12, textAlign: 'center', lineHeight: 18, marginBottom: 28, paddingHorizontal: 20 },
   successBtn: {
     borderRadius: 16, paddingHorizontal: 36, paddingVertical: 14,
   },
