@@ -1262,105 +1262,72 @@ export default function RebookScreen() {
               </TouchableOpacity>
 
               {/* Booking summary */}
-              <View style={[
-                {
-                  backgroundColor: C.card,
-                  borderRadius: 20,
-                  borderWidth: 1,
-                  borderColor: C.border,
-                  padding: 20,
-                  shadowColor: '#000',
-                  shadowOffset: { width: 0, height: 4 },
-                  shadowOpacity: isDark ? 0.4 : 0.05,
-                  shadowRadius: 12,
-                  elevation: 4,
-                }
-              ]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                  <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' }}>
-                    <Check color={'white'} size={20} strokeWidth={3} />
-                  </View>
-                  <View>
-                    <Text style={{ fontSize: 18, fontWeight: '800', color: C.text }}>Booking Summary</Text>
-                    <Text style={{ fontSize: 13, color: C.text3 }}>Review your appointment</Text>
-                  </View>
-                </View>
-
-                {/* Info Rows */}
-                <View style={{ gap: 16 }}>
-                  {[
-                    ...(teamMembers.length > 0 ? [{
-                      Icon: Users,
-                      label: 'Professional',
-                      value: selectedTeamMember
-                        ? (teamMembers.find((t) => t.id === selectedTeamMember)?.display_name || 'Selected pro')
-                        : 'Any Pro',
-                    }] : []),
-                    { Icon: Scissors, label: 'Service', value: selectedService?.name },
-                    { Icon: CalendarCheck, label: 'Date', value: selectedDate ? format(selectedDate, 'EEEE, MMMM d') : '' },
-                    { Icon: Clock, label: 'Time', value: selectedSlot ? fmt12(selectedSlot) : '' },
-                    ...(shopName ? [{ Icon: MapPin, label: 'At', value: shopName + (shopCity ? ` · ${shopCity}` : '') }] : []),
-                  ].map(({ Icon, label, value }, idx, arr) => (
-                    <View key={label} style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-                      <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: C.bg2, alignItems: 'center', justifyContent: 'center' }}>
-                        <Icon color={C.accent} size={16} />
-                      </View>
+              <View style={[S.confirmCard, { backgroundColor: C.card, borderColor: C.border }]}>
+                <Text style={[S.confirmTitle, { color: C.text }]}>Review & Confirm</Text>
+                <View style={[S.confirmDivider, { backgroundColor: C.border }]} />
+                {[
+                  ...(teamMembers.length > 0 ? [{
+                    Icon: Users,
+                    label: 'Professional',
+                    value: selectedTeamMember
+                      ? (teamMembers.find((t) => t.id === selectedTeamMember)?.display_name || 'Selected pro')
+                      : 'Any Pro',
+                  }] : []),
+                  { Icon: Scissors, label: 'Service', value: selectedService?.name },
+                  { Icon: CalendarCheck, label: 'Date', value: selectedDate ? format(selectedDate, 'EEEE, MMMM d') : '' },
+                  { Icon: Clock, label: 'Time', value: selectedSlot ? fmt12(selectedSlot) : '' },
+                  ...(shopName ? [{ Icon: MapPin, label: 'At', value: shopName + (shopCity ? ` · ${shopCity}` : '') }] : []),
+                ].map(({ Icon, label, value }, idx, arr) => (
+                  <View key={label}>
+                    <View style={S.confirmRow}>
+                      <View style={[S.confirmIconWrap, { backgroundColor: C.bg2 }]}><Icon color={C.accent} size={16} /></View>
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, color: C.text3, marginBottom: 2 }}>
-                          {label}
-                        </Text>
-                        <Text style={{ fontSize: 15, fontWeight: '600', color: C.text }}>{value}</Text>
+                        <Text style={[S.confirmRowLabel, { color: C.text3 }]}>{label}</Text>
+                        <Text style={[S.confirmRowValue, { color: C.text }]}>{value}</Text>
                       </View>
                     </View>
-                  ))}
-                </View>
-
+                    {idx < arr.length - 1 && <View style={[S.confirmRowDivider, { backgroundColor: C.border }]} />}
+                  </View>
+                ))}
                 {selectedService?.price != null && (
                   <>
-                    <View style={{ height: 1, backgroundColor: C.border, marginVertical: 20 }} />
-                    <View style={{ gap: 8 }}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Text style={{ fontSize: 14, color: C.text2 }}>Service price</Text>
-                        <Text style={{ fontSize: 14, fontWeight: '600', color: C.text }}>${servicePrice.toFixed(2)}</Text>
-                      </View>
-
-                      {addonsTotal > 0 && (
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <Text style={{ fontSize: 14, color: C.accent, fontWeight: '600' }}>Add-ons</Text>
-                            <View style={{ backgroundColor: isDark ? (C.accent + '30') : (C.accent + '15'), paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 }}>
-                              <Text style={{ fontSize: 10, fontWeight: '700', color: C.accent }}>{selectedAddons.length}</Text>
-                            </View>
-                          </View>
-                          <Text style={{ fontSize: 14, color: C.accent, fontWeight: '600' }}>+${addonsTotal.toFixed(2)}</Text>
-                        </View>
-                      )}
-
-                      {appliedDiscount && (
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Text style={{ fontSize: 14, color: C.text, fontWeight: '600' }}>Discount ({appliedDiscount.code})</Text>
-                          <Text style={{ fontSize: 14, color: '#10b981', fontWeight: '700' }}>
-                            -${(servicePrice - discountedPrice).toFixed(2)}
-                          </Text>
-                        </View>
-                      )}
-
-                      {applyFees && bookingFee > 0 && (
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Text style={{ fontSize: 13, color: C.text3 }}>Processing fee</Text>
-                          <Text style={{ fontSize: 13, fontWeight: '500', color: C.text3 }}>${bookingFee.toFixed(2)}</Text>
-                        </View>
-                      )}
-
-                      <View style={{ height: 1, backgroundColor: C.border, marginVertical: 8 }} />
-
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-                        <Text style={{ fontSize: 16, color: C.text2, fontWeight: '700' }}>Total due</Text>
-                        <Text style={{ fontSize: 28, fontWeight: '900', color: C.text, letterSpacing: -0.5 }}>${displayTotal.toFixed(2)}</Text>
-                      </View>
+                    <View style={[S.confirmDivider, { backgroundColor: C.border }]} />
+                    <View style={S.confirmPriceRow}>
+                      <Text style={[S.confirmPriceLabel, { color: C.text2 }]}>Service price</Text>
+                      <Text style={[S.confirmPriceLabel, { color: C.text2 }]}>${servicePrice.toFixed(2)}</Text>
                     </View>
+                    {addonsTotal > 0 && (
+                      <View style={[S.confirmPriceRow, { marginTop: 6 }]}>
+                        <Text style={[S.confirmPriceLabel, { color: '#8b5cf6', fontWeight: '600' }]}>Add-ons ({selectedAddons.length})</Text>
+                        <Text style={[S.confirmPriceLabel, { color: '#8b5cf6', fontWeight: '600' }]}>+${addonsTotal.toFixed(2)}</Text>
+                      </View>
+                    )}
+                    {appliedDiscount && (
+                      <View style={[S.confirmPriceRow, { marginTop: 6 }]}>
+                        <Text style={[S.confirmPriceLabel, { color: C.text, fontWeight: '600' }]}>Discount ({appliedDiscount.code})</Text>
+                        <Text style={[S.confirmPriceLabel, { color: C.accent, fontWeight: '600' }]}>
+                          -${(servicePrice - discountedPrice).toFixed(2)}
+                        </Text>
+                      </View>
+                    )}
+                    {applyFees && bookingFee > 0 && (
+                      <View style={[S.confirmPriceRow, { marginTop: 6 }]}>
+                        <Text style={[S.confirmPriceLabel, { color: C.text3, fontSize: 12 }]}>Booking fee</Text>
+                        <Text style={[S.confirmPriceLabel, { color: C.text3, fontSize: 12 }]}>${bookingFee.toFixed(2)}</Text>
+                      </View>
+                    )}
+                    <View style={[S.confirmDivider, { backgroundColor: C.border, marginTop: 10 }]} />
+                    <View style={[S.confirmPriceRow, { marginTop: 4 }]}>
+                      <Text style={[S.confirmPriceLabel, { color: C.text2, fontWeight: '700' }]}>Total due</Text>
+                      <Text style={[S.confirmPriceValue, { color: C.text }]}>${displayTotal.toFixed(2)}</Text>
+                    </View>
+                    {applyFees && bookingFee > 0 && (
+                      <Text style={[S.confirmNote, { color: C.text3, textAlign: 'right', marginTop: 2, fontSize: 10 }]}>
+                        Includes processing fee
+                      </Text>
+                    )}
 
-                    <View style={{ marginTop: 24 }}>
+                    <View style={{ marginTop: 16 }}>
                       {appliedDiscount ? (
                         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 12, backgroundColor: C.bg2, borderRadius: 10, borderWidth: 1, borderColor: C.accent }}>
                           <Text style={{ color: C.accent, fontWeight: '600' }}>{appliedDiscount.code} Applied</Text>
@@ -1400,77 +1367,39 @@ export default function RebookScreen() {
 
               {/* ── Add-ons Picker ── */}
               {availableAddons.length > 0 && (
-                <View style={{ gap: 12, marginTop: 4 }}>
-                  <Text style={[S.stepHint, { color: C.text2, marginBottom: 4, paddingLeft: 2 }]}>
-                    ✨ Enhance Your Visit
-                  </Text>
-                  <View style={{ gap: 10 }}>
+                <View style={{ gap: 10 }}>
+                  <Text style={[S.stepHint, { color: C.text2 }]}>✨ Enhance Your Visit</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
                     {availableAddons.map(addon => {
                       const isSelected = selectedAddons.includes(addon.id);
                       return (
                         <Pressable
                           key={addon.id}
-                          onPress={() => {
-                            toggleAddon(addon.id);
-                            if (!isSelected) {
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                            } else {
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                            }
+                          onPress={() => toggleAddon(addon.id)}
+                          style={{
+                            width: '47%',
+                            padding: 14,
+                            borderRadius: 14,
+                            borderWidth: 2,
+                            borderColor: isSelected ? C.accent : C.border,
+                            backgroundColor: isSelected ? (C.accent + '10') : C.card,
                           }}
-                          style={[
-                            {
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              padding: 16,
-                              borderRadius: 16,
-                              borderWidth: 1,
-                              backgroundColor: C.card,
-                              shadowColor: '#000',
-                              shadowOffset: { width: 0, height: 2 },
-                              shadowOpacity: isDark ? 0.3 : 0.05,
-                              shadowRadius: 8,
-                              elevation: 2,
-                            },
-                            isSelected ? {
-                              borderColor: C.accent,
-                              backgroundColor: isDark ? (C.accent + '20') : (C.accent + '08'),
-                            } : {
-                              borderColor: C.border,
-                            }
-                          ]}
                         >
-                          <View style={{ flex: 1, gap: 4 }}>
-                            <Text style={{ fontSize: 15, fontWeight: '700', color: C.text }}>
-                              {addon.name}
-                            </Text>
-                            {addon.description ? (
-                              <Text style={{ fontSize: 12, color: C.text3, lineHeight: 16 }}>
-                                {addon.description}
-                              </Text>
-                            ) : null}
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: C.text, marginBottom: 2 }} numberOfLines={1}>
+                            {addon.name}
+                          </Text>
+                          {addon.description ? (
+                            <Text style={{ fontSize: 10, color: C.text3, marginBottom: 6 }} numberOfLines={1}>{addon.description}</Text>
+                          ) : <View style={{ height: 6 }} />}
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <Text style={{ fontSize: 13, fontWeight: '800', color: isSelected ? C.accent : '#10b981' }}>+${Number(addon.price).toFixed(2)}</Text>
+                            {addon.duration_mins > 0 && <Text style={{ fontSize: 9, color: C.text3 }}>+{addon.duration_mins}min</Text>}
                           </View>
-
-                          <View style={{ alignItems: 'flex-end', marginLeft: 12, gap: 6 }}>
-                            <Text style={{ fontSize: 15, fontWeight: '800', color: isSelected ? C.accent : '#10b981' }}>
-                              +${Number(addon.price).toFixed(2)}
-                            </Text>
-                            {addon.duration_mins > 0 && (
-                              <View style={{ backgroundColor: C.bg2, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                                <Text style={{ fontSize: 10, fontWeight: '600', color: C.text3 }}>+{addon.duration_mins}m</Text>
-                              </View>
-                            )}
-                          </View>
-
-                          {/* Selection Check Circle */}
-                          <View style={[
-                            { width: 22, height: 22, borderRadius: 11, borderWidth: 2, marginLeft: 16, alignItems: 'center', justifyContent: 'center' },
-                            isSelected
-                              ? { borderColor: C.accent, backgroundColor: C.accent }
-                              : { borderColor: C.border, backgroundColor: 'transparent' }
-                          ]}>
-                            {isSelected && <Check color={isDark ? '#000' : '#fff'} size={12} strokeWidth={3} />}
-                          </View>
+                          {isSelected && (
+                            <View style={{ position: 'absolute', top: 8, right: 8, width: 18, height: 18, borderRadius: 9, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' }}>
+                              <Check color={isDark ? '#000' : '#fff'} size={10} strokeWidth={3} />
+                            </View>
+                          )}
                         </Pressable>
                       );
                     })}
@@ -1479,58 +1408,32 @@ export default function RebookScreen() {
               )}
 
               {/* Payment method */}
-              <View style={{ gap: 12, marginTop: 8 }}>
-                <Text style={[S.stepHint, { color: C.text2, marginBottom: 2, paddingLeft: 2 }]}>
-                  Payment Method
-                </Text>
+              <View style={{ gap: 10 }}>
+                <Text style={[S.stepHint, { color: C.text2 }]}>How would you like to pay?</Text>
                 {PAYMENT_OPTIONS.map((opt) => {
                   const active = paymentMethod === opt.key;
                   return (
                     <Tile
                       key={opt.key}
-                      onPress={() => {
-                        setPaymentMethod(opt.key);
-                        if (!active) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      }}
+                      onPress={() => setPaymentMethod(opt.key)}
                       style={[
-                        {
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          padding: 16,
-                          borderRadius: 16,
-                          borderWidth: 1.5,
-                          backgroundColor: C.card,
-                        },
-                        active ? {
-                          borderColor: C.accent,
-                          backgroundColor: isDark ? (C.accent + '15') : (C.accent + '05'),
-                        } : {
-                          borderColor: C.border,
-                        }
+                        S.payCard,
+                        { backgroundColor: C.bg, borderColor: C.border },
+                        active && { borderColor: C.accent, backgroundColor: C.bg2 },
                       ]}
                     >
-                      <View style={[
-                        { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginRight: 14 },
-                        active ? { backgroundColor: C.accent } : { backgroundColor: C.bg2 }
-                      ]}>
-                        <opt.Icon color={active ? accentText : C.text2} size={20} />
+                      <View style={[S.payIconWrap, { backgroundColor: active ? C.accent : C.bg3 }]}>
+                        <opt.Icon color={active ? accentText : C.text2} size={18} />
                       </View>
-
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 15, fontWeight: active ? '800' : '600', color: C.text, marginBottom: 2 }}>
-                          {opt.label}
-                        </Text>
-                        <Text style={{ fontSize: 13, color: C.text3 }}>{opt.sub}</Text>
+                        <Text style={[S.payLabel, { color: C.text, fontWeight: active ? '800' : '600' }]}>{opt.label}</Text>
+                        <Text style={[S.paySub, { color: C.text3 }]}>{opt.sub}</Text>
                       </View>
-
-                      <View style={[
-                        { width: 22, height: 22, borderRadius: 11, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
-                        active
-                          ? { borderColor: C.accent, backgroundColor: C.accent }
-                          : { borderColor: C.border, backgroundColor: 'transparent' }
-                      ]}>
-                        {active && <Check color={accentText} size={12} strokeWidth={3} />}
-                      </View>
+                      {active && (
+                        <View style={[S.payCheck, { backgroundColor: C.accent }]}>
+                          <Check color={accentText} size={12} strokeWidth={3} />
+                        </View>
+                      )}
                     </Tile>
                   );
                 })}
@@ -1539,31 +1442,13 @@ export default function RebookScreen() {
               <Tile
                 onPress={handleBook}
                 disabled={booking}
-                style={[
-                  {
-                    marginTop: 16,
-                    paddingVertical: 18,
-                    borderRadius: 100,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 10,
-                    shadowColor: C.accent,
-                    shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.3,
-                    shadowRadius: 10,
-                    elevation: 6,
-                  },
-                  { backgroundColor: C.accent, opacity: booking ? 0.75 : 1 }
-                ]}
+                style={[S.confirmBtn, { backgroundColor: C.accent, opacity: booking ? 0.75 : 1 }]}
               >
                 {booking
                   ? <ActivityIndicator color={accentText} />
                   : <>
-                    <CalendarCheck color={accentText} size={20} />
-                    <Text style={[{ fontSize: 18, fontWeight: '800', letterSpacing: 0.5 }, { color: accentText }]}>
-                      Confirm Booking
-                    </Text>
+                    <CalendarCheck color={accentText} size={18} />
+                    <Text style={[S.confirmBtnText, { color: accentText }]}>Confirm Booking</Text>
                   </>
                 }
               </Tile>
