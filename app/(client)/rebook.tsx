@@ -236,6 +236,18 @@ export default function RebookScreen() {
   const [appliedDiscount, setAppliedDiscount] = useState<{ id: string, code: string, type: 'percent' | 'fixed', value: number } | null>(null);
   const [discountError, setDiscountError] = useState('');
   const [applyingDiscount, setApplyingDiscount] = useState(false);
+
+  // Add-ons State
+  const [availableAddons, setAvailableAddons] = useState<{ id: string; name: string; description: string; price: number; duration_mins: number; icon_name: string }[]>([]);
+  const [selectedAddons, setSelectedAddons] = useState<string[]>([]);
+
+  const toggleAddon = (id: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedAddons(prev => prev.includes(id) ? prev.filter(a => a !== id) : [...prev, id]);
+  };
+
+  const addonsTotal = availableAddons.filter(a => selectedAddons.includes(a.id)).reduce((sum, a) => sum + Number(a.price), 0);
+
   const selectedRealTeamMember = selectedTeamMember.startsWith('owner:') ? '' : selectedTeamMember;
 
   const applyDiscountCode = async () => {
@@ -682,6 +694,18 @@ export default function RebookScreen() {
     fetchAvailableDatesForMonth();
   }, [fetchAvailableDatesForMonth]);
 
+  // Fetch add-ons for this barber
+  useEffect(() => {
+    if (!barberId) return;
+    supabase
+      .from('service_addons')
+      .select('id, name, description, price, duration_mins, icon_name')
+      .eq('barber_id', barberId)
+      .eq('is_active', true)
+      .order('sort_order')
+      .then(({ data }) => setAvailableAddons((data as any[]) || []));
+  }, [barberId]);
+
   const handleBook = async () => {
     if (!barberId || !clientId || !selectedService || !selectedDate || !selectedSlot) return;
     setBooking(true);
@@ -750,7 +774,10 @@ export default function RebookScreen() {
         }
       }
 
-      const finalNotes = appliedDiscount ? `Used discount code: ${appliedDiscount.code}` : null;
+      const addonNames = availableAddons.filter(a => selectedAddons.includes(a.id)).map(a => a.name);
+      const addonNote = addonNames.length > 0 ? `Add-ons: ${addonNames.join(', ')}` : '';
+      const discountNote = appliedDiscount ? `Used discount code: ${appliedDiscount.code}` : '';
+      const finalNotes = [addonNote, discountNote].filter(Boolean).join('\n') || null;
 
       // ── Insert appointment ──────────────────────────────────────────────
       const { error: insertError } = await supabase.from('appointments').insert({
@@ -875,13 +902,14 @@ export default function RebookScreen() {
   // Fee calculation — only applies when paying online AND barber has pass_fees_to_client on
   // Stripe: 2.9% + $0.30. Platform: 1%. Gross-up so barber always gets their full price.
   const servicePrice = Number(selectedService?.price ?? 0);
+  const priceWithAddons = servicePrice + addonsTotal;
   const isOnlinePayment = paymentMethod === 'apple_pay' || paymentMethod === 'card';
-  let discountedPrice = servicePrice;
+  let discountedPrice = priceWithAddons;
   if (appliedDiscount) {
     if (appliedDiscount.type === 'percent') {
-      discountedPrice = Math.max(0, servicePrice - (servicePrice * (appliedDiscount.value / 100)));
+      discountedPrice = Math.max(0, priceWithAddons - (priceWithAddons * (appliedDiscount.value / 100)));
     } else {
-      discountedPrice = Math.max(0, servicePrice - appliedDiscount.value);
+      discountedPrice = Math.max(0, priceWithAddons - appliedDiscount.value);
     }
   }
 
@@ -1268,6 +1296,12 @@ export default function RebookScreen() {
                       <Text style={[S.confirmPriceLabel, { color: C.text2 }]}>Service price</Text>
                       <Text style={[S.confirmPriceLabel, { color: C.text2 }]}>${servicePrice.toFixed(2)}</Text>
                     </View>
+                    {addonsTotal > 0 && (
+                      <View style={[S.confirmPriceRow, { marginTop: 6 }]}>
+                        <Text style={[S.confirmPriceLabel, { color: '#8b5cf6', fontWeight: '600' }]}>Add-ons ({selectedAddons.length})</Text>
+                        <Text style={[S.confirmPriceLabel, { color: '#8b5cf6', fontWeight: '600' }]}>+${addonsTotal.toFixed(2)}</Text>
+                      </View>
+                    )}
                     {appliedDiscount && (
                       <View style={[S.confirmPriceRow, { marginTop: 6 }]}>
                         <Text style={[S.confirmPriceLabel, { color: C.text, fontWeight: '600' }]}>Discount ({appliedDiscount.code})</Text>
@@ -1330,6 +1364,48 @@ export default function RebookScreen() {
                   </>
                 )}
               </View>
+
+              {/* ── Add-ons Picker ── */}
+              {availableAddons.length > 0 && (
+                <View style={{ gap: 10 }}>
+                  <Text style={[S.stepHint, { color: C.text2 }]}>✨ Enhance Your Visit</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                    {availableAddons.map(addon => {
+                      const isSelected = selectedAddons.includes(addon.id);
+                      return (
+                        <Pressable
+                          key={addon.id}
+                          onPress={() => toggleAddon(addon.id)}
+                          style={{
+                            width: '47%',
+                            padding: 14,
+                            borderRadius: 14,
+                            borderWidth: 2,
+                            borderColor: isSelected ? C.accent : C.border,
+                            backgroundColor: isSelected ? (C.accent + '10') : C.card,
+                          }}
+                        >
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: C.text, marginBottom: 2 }} numberOfLines={1}>
+                            {addon.name}
+                          </Text>
+                          {addon.description ? (
+                            <Text style={{ fontSize: 10, color: C.text3, marginBottom: 6 }} numberOfLines={1}>{addon.description}</Text>
+                          ) : <View style={{ height: 6 }} />}
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <Text style={{ fontSize: 13, fontWeight: '800', color: isSelected ? C.accent : '#10b981' }}>+${Number(addon.price).toFixed(2)}</Text>
+                            {addon.duration_mins > 0 && <Text style={{ fontSize: 9, color: C.text3 }}>+{addon.duration_mins}min</Text>}
+                          </View>
+                          {isSelected && (
+                            <View style={{ position: 'absolute', top: 8, right: 8, width: 18, height: 18, borderRadius: 9, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' }}>
+                              <Check color={isDark ? '#000' : '#fff'} size={10} strokeWidth={3} />
+                            </View>
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
 
               {/* Payment method */}
               <View style={{ gap: 10 }}>
