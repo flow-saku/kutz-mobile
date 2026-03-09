@@ -8,6 +8,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   CalendarDays, Clock, Check, X, Play, ChevronLeft, ChevronRight,
   Scissors, DollarSign, Users, TrendingUp, CheckCircle2, Timer, CreditCard,
+  Globe, UserCircle2, UserPlus,
 } from 'lucide-react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
@@ -15,6 +16,7 @@ import { router } from 'expo-router';
 import { supabase, SUPABASE_URL } from '@/lib/supabase';
 import { useTheme } from '@/lib/theme';
 import { resolveBarberScope } from '@/lib/barber';
+import { useToast } from '@/lib/toast';
 import AnimatedCounter from '@/components/ui/AnimatedCounter';
 import {
   format, addDays, subDays, startOfWeek, isSameDay, isToday,
@@ -66,6 +68,7 @@ function Tap({ onPress, style, children, disabled = false }: any) {
 export default function BarberAppointments() {
   const { C, theme } = useTheme();
   const isDark = theme === 'dark';
+  const toast = useToast();
   const insets = useSafeAreaInsets();
   const tabBarClearance = TAB_BAR_HEIGHT + Math.max(16, insets.bottom + 8) + 16;
 
@@ -123,7 +126,7 @@ export default function BarberAppointments() {
     try {
       let q = supabase
         .from('appointments')
-        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_method, services(name)')
+        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_method, is_walk_in, services(name)')
         .in('barber_id', ids)
         .eq('date', format(date, 'yyyy-MM-dd'))
         .order('start_time', { ascending: true });
@@ -201,6 +204,49 @@ export default function BarberAppointments() {
     }
     setRefreshing(false);
   }, [scopeIds, selectedDate, calMonth, staffMemberId]);
+
+  const addWalkIn = () => {
+    Alert.prompt(
+      'Add Walk-in',
+      'Enter the client\'s name to add them to the queue.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Add to Queue',
+          onPress: async (name?: string) => {
+            if (!name?.trim()) return;
+            const trimmed = name.trim();
+            try {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              const now = new Date();
+              const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:00`;
+              const { error } = await supabase.from('appointments').insert({
+                barber_id: scopeIds[0],
+                client_name: trimmed,
+                date: format(isToday(selectedDate) ? now : selectedDate, 'yyyy-MM-dd'),
+                start_time: timeStr,
+                end_time: timeStr,
+                status: 'confirmed',
+                is_walk_in: true,
+                ...(staffMemberId ? { team_member_id: staffMemberId } : {}),
+              });
+              if (error) throw error;
+              toast.success(`${trimmed} added to queue`);
+              if (scopeIds.length) {
+                fetchAppointments(scopeIds, selectedDate, staffMemberId);
+                fetchMonthDots(scopeIds, calMonth, staffMemberId);
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to add walk-in');
+            }
+          },
+        },
+      ],
+      'plain-text',
+      '',
+      'default',
+    );
+  };
 
   const updateStatus = async (aptId: string, newStatus: string) => {
     try {
@@ -458,12 +504,22 @@ export default function BarberAppointments() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[S.aptName, { color: C.text }]} numberOfLines={1}>{apt.client_name || 'Client'}</Text>
-              {!!apt.service_name && (
-                <View style={S.serviceRow}>
-                  <Scissors color={C.text3} size={11} strokeWidth={2} />
-                  <Text style={[S.aptService, { color: C.text2 }]} numberOfLines={1}>{apt.service_name}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 3, flexWrap: 'wrap' }}>
+                {!!apt.service_name && (
+                  <View style={S.serviceRow}>
+                    <Scissors color={C.text3} size={11} strokeWidth={2} />
+                    <Text style={[S.aptService, { color: C.text2 }]} numberOfLines={1}>{apt.service_name}</Text>
+                  </View>
+                )}
+                <View style={[S.typeBadge, { backgroundColor: apt.is_walk_in ? `${orange}12` : `${blue}10` }]}>
+                  {apt.is_walk_in
+                    ? <UserCircle2 color={orange} size={10} strokeWidth={2.5} />
+                    : <Globe color={blue} size={10} strokeWidth={2.5} />}
+                  <Text style={[S.typeBadgeText, { color: apt.is_walk_in ? orange : blue }]}>
+                    {apt.is_walk_in ? 'Walk-in' : 'Booked'}
+                  </Text>
                 </View>
-              )}
+              </View>
             </View>
           </View>
 
@@ -627,6 +683,11 @@ export default function BarberAppointments() {
           </Text>
         </View>
         <View style={S.headerRight}>
+          <Tap onPress={addWalkIn}
+            style={[S.todayBtn, { backgroundColor: `${orange}12`, borderColor: `${orange}30`, flexDirection: 'row', gap: 4 }]}>
+            <UserPlus color={orange} size={14} strokeWidth={2.5} />
+            <Text style={[S.todayTxt, { color: orange }]}>Walk-in</Text>
+          </Tap>
           <Tap onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedDate(new Date()); setCalMonth(new Date()); }}
             style={[S.todayBtn, { backgroundColor: C.bg2, borderColor: C.border }]}>
             <Text style={[S.todayTxt, { color: C.accent }]}>Today</Text>
@@ -867,8 +928,10 @@ const S = StyleSheet.create({
   avatar:       { width: 46, height: 46, borderRadius: 15, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   avatarTxt:    { fontSize: 15, fontWeight: '800' },
   aptName:      { fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
-  serviceRow:   { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  serviceRow:   { flexDirection: 'row', alignItems: 'center', gap: 4 },
   aptService:   { fontSize: 12, fontWeight: '500' },
+  typeBadge:    { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  typeBadgeText:{ fontSize: 10, fontWeight: '700' },
   badge:        { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
   badgeTxt:     { fontSize: 11, fontWeight: '700' },
   metaChip:     { flexDirection: 'row', alignItems: 'center', gap: 5 },

@@ -232,7 +232,7 @@ export default function BarberDashboard() {
         .or(`id.eq.${uid},user_id.eq.${uid}`).limit(1).maybeSingle();
 
       let todayQ = supabase.from('appointments')
-        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_id, payment_method, services(name)')
+        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_id, payment_method, is_walk_in, services(name)')
         .in('barber_id', ids).eq('date', today).order('start_time', { ascending: true });
       if (tmId) todayQ = (todayQ as any).eq('team_member_id', tmId);
       const todayRes = await todayQ;
@@ -357,6 +357,49 @@ export default function BarberDashboard() {
     }
     setRefreshing(false);
   }, [primaryId, staffMemberId]);
+
+  // ── Add Walk-in to Queue ──────────────────────────────────────────────────
+  const addWalkIn = () => {
+    Alert.prompt(
+      'Add Walk-in',
+      'Enter the client\'s name to add them to the queue.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Add to Queue',
+          onPress: async (name?: string) => {
+            if (!name?.trim()) return;
+            const trimmed = name.trim();
+            try {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              const now = new Date();
+              const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:00`;
+              const { error } = await supabase.from('appointments').insert({
+                barber_id: scopeIds[0],
+                client_name: trimmed,
+                date: format(now, 'yyyy-MM-dd'),
+                start_time: timeStr,
+                end_time: timeStr,
+                status: 'confirmed',
+                is_walk_in: true,
+                ...(staffMemberId ? { team_member_id: staffMemberId } : {}),
+              });
+              if (error) throw error;
+              toast.success(`${trimmed} added to queue`);
+              if (scopeRef.current.length && primaryId) {
+                await fetchData(scopeRef.current, primaryId, staffMemberId);
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to add walk-in');
+            }
+          },
+        },
+      ],
+      'plain-text',
+      '',
+      'default',
+    );
+  };
 
   // ── Status Update with Celebrations ────────────────────────────────────────
   const updateStatus = async (aptId: string, newStatus: string) => {
@@ -522,13 +565,21 @@ export default function BarberDashboard() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={[S.aptName, { color: C.text }]} numberOfLines={1}>{apt.client_name || 'Client'}</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
               {!!apt.service_name && (
                 <Text style={[S.aptMeta, { color: C.text3 }]}>{apt.service_name}</Text>
               )}
               {!!assignedStaffName && (
                 <Text style={[S.aptMeta, { color: C.accent }]}>{assignedStaffName}</Text>
               )}
+              <View style={[S.typeBadge, { backgroundColor: apt.is_walk_in ? `${orange}12` : `${blue}10` }]}>
+                {apt.is_walk_in
+                  ? <UserCircle2 color={orange} size={10} strokeWidth={2.5} />
+                  : <Globe color={blue} size={10} strokeWidth={2.5} />}
+                <Text style={[S.typeBadgeText, { color: apt.is_walk_in ? orange : blue }]}>
+                  {apt.is_walk_in ? 'Walk-in' : 'Booked'}
+                </Text>
+              </View>
             </View>
           </View>
         </View>
@@ -751,7 +802,14 @@ export default function BarberDashboard() {
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={[S.inSessionName, { color: C.text }]}>{apt.client_name}</Text>
-                        <Text style={[S.inSessionMeta, { color: C.text3 }]}>{apt.service_name || 'Service'}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 1 }}>
+                          <Text style={[S.inSessionMeta, { color: C.text3 }]}>{apt.service_name || 'Service'}</Text>
+                          <View style={[S.typeBadge, { backgroundColor: apt.is_walk_in ? `${orange}12` : `${blue}10` }]}>
+                            <Text style={[S.typeBadgeText, { color: apt.is_walk_in ? orange : blue }]}>
+                              {apt.is_walk_in ? 'Walk-in' : 'Booked'}
+                            </Text>
+                          </View>
+                        </View>
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
                         <Text style={[S.inSessionTimer, { color: orange }]}>{elapsedSince(apt.start_time)}</Text>
@@ -822,24 +880,38 @@ export default function BarberDashboard() {
             /* No appointments */
             <View style={S.readySection}>
               <Text style={[S.readyTitle, { color: C.text }]}>Ready to build?</Text>
-              <Text style={[S.readySub, { color: C.text3 }]}>Charge a walk-in to get started</Text>
+              <Text style={[S.readySub, { color: C.text3 }]}>Add a walk-in or charge a client</Text>
               <BigCTA
-                onPress={() => router.push('/(barber)/charge')}
-                label="Charge Client"
-                color={C.accent}
-                icon={<CreditCard color="#fff" size={24} />}
+                onPress={addWalkIn}
+                label="Add Walk-in"
+                sub="Add to today's queue"
+                color={orange}
+                icon={<UserCircle2 color="#fff" size={24} />}
               />
+              <View style={{ height: 8 }} />
+              <Tap onPress={() => router.push('/(barber)/charge')}
+                style={[S.chargeLink, { borderColor: C.cardBorder }]}>
+                <CreditCard color={C.text2} size={16} />
+                <Text style={[S.chargeLinkText, { color: C.text2 }]}>Charge walk-in directly</Text>
+                <ChevronRight color={C.text3} size={14} />
+              </Tap>
             </View>
           )}
 
-          {/* Quick charge link when in session */}
-          {inChairApts.length > 0 && (
-            <Tap onPress={() => router.push('/(barber)/charge')}
-              style={[S.chargeLink, { borderColor: C.cardBorder }]}>
-              <CreditCard color={C.text2} size={16} />
-              <Text style={[S.chargeLinkText, { color: C.text2 }]}>Charge walk-in</Text>
-              <ChevronRight color={C.text3} size={14} />
-            </Tap>
+          {/* Quick actions when appointments exist */}
+          {todayApts.length > 0 && (
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+              <Tap onPress={addWalkIn}
+                style={[S.chargeLink, { borderColor: C.cardBorder, flex: 1 }]}>
+                <UserCircle2 color={orange} size={16} />
+                <Text style={[S.chargeLinkText, { color: C.text2 }]}>Add walk-in</Text>
+              </Tap>
+              <Tap onPress={() => router.push('/(barber)/charge')}
+                style={[S.chargeLink, { borderColor: C.cardBorder, flex: 1 }]}>
+                <CreditCard color={C.text2} size={16} />
+                <Text style={[S.chargeLinkText, { color: C.text2 }]}>Charge</Text>
+              </Tap>
+            </View>
           )}
 
           {/* Pending banner */}
@@ -1086,6 +1158,8 @@ const S = StyleSheet.create({
   aptAvatarTxt:   { fontSize: 14, fontWeight: '800' },
   aptName:        { fontSize: 15, fontWeight: '700' },
   aptMeta:        { fontSize: 11, fontWeight: '500' },
+  typeBadge:      { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  typeBadgeText:  { fontSize: 10, fontWeight: '700' },
   aptActions:     { flexDirection: 'row', gap: 8, marginTop: 12 },
   aptBtn:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 13 },
   aptBtnTxt:      { fontSize: 13, fontWeight: '700', color: '#fff' },
