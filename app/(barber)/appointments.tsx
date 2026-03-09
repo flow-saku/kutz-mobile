@@ -126,7 +126,7 @@ export default function BarberAppointments() {
     try {
       let q = supabase
         .from('appointments')
-        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_method, is_walk_in, services(name)')
+        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_method, is_walk_in, started_at, completed_at, actual_duration_minutes, services(name, duration_minutes)')
         .in('barber_id', ids)
         .eq('date', format(date, 'yyyy-MM-dd'))
         .order('start_time', { ascending: true });
@@ -136,6 +136,7 @@ export default function BarberAppointments() {
         ...a,
         price: a.price_charged,
         service_name: a.services?.name ?? null,
+        estimated_minutes: a.services?.duration_minutes ?? null,
         paid: a.paid ?? false,
       }));
       setAppointments(mapped);
@@ -258,7 +259,21 @@ export default function BarberAppointments() {
       if (newStatus === 'completed') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
-      await supabase.from('appointments').update({ status: newStatus }).eq('id', aptId);
+      const updatePayload: any = { status: newStatus };
+      if (newStatus === 'in_chair') {
+        updatePayload.started_at = new Date().toISOString();
+      }
+      if (newStatus === 'completed') {
+        const now = new Date();
+        updatePayload.completed_at = now.toISOString();
+        const apt = appointments.find(a => a.id === aptId);
+        if (apt?.started_at) {
+          updatePayload.actual_duration_minutes = Math.round(
+            (now.getTime() - new Date(apt.started_at).getTime()) / 60000
+          );
+        }
+      }
+      await supabase.from('appointments').update(updatePayload).eq('id', aptId);
 
       // ── Send cancellation email to client ───────────────────────────────────
       if (newStatus === 'cancelled') {
@@ -519,6 +534,14 @@ export default function BarberAppointments() {
                     {apt.is_walk_in ? 'Walk-in' : 'Booked'}
                   </Text>
                 </View>
+                {isDone && apt.actual_duration_minutes != null && (
+                  <View style={[S.typeBadge, { backgroundColor: `${C.text3}10` }]}>
+                    <Timer color={C.text3} size={10} strokeWidth={2.5} />
+                    <Text style={[S.typeBadgeText, { color: C.text3 }]}>
+                      {apt.actual_duration_minutes}m
+                    </Text>
+                  </View>
+                )}
               </View>
             </View>
           </View>

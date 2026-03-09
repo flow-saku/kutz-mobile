@@ -22,6 +22,7 @@ import * as Haptics from 'expo-haptics';
 import AnimatedCounter from '@/components/ui/AnimatedCounter';
 import ConfettiPop from '@/components/ui/ConfettiPop';
 import ProgressRing from '@/components/ui/ProgressRing';
+import SessionTimerPill from '@/components/ui/SessionTimerPill';
 import { useToast } from '@/lib/toast';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -45,6 +46,14 @@ function elapsedSince(timeStr: string): string {
     const [h, m] = timeStr.split(':').map(Number);
     const now = new Date();
     const mins = (now.getHours() * 60 + now.getMinutes()) - (h * 60 + m);
+    if (mins < 1) return 'Just started';
+    if (mins < 60) return `${mins}m`;
+    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  } catch { return ''; }
+}
+function elapsedSinceTimestamp(isoStr: string): string {
+  try {
+    const mins = Math.floor((Date.now() - new Date(isoStr).getTime()) / 60000);
     if (mins < 1) return 'Just started';
     if (mins < 60) return `${mins}m`;
     return `${Math.floor(mins / 60)}h ${mins % 60}m`;
@@ -232,7 +241,7 @@ export default function BarberDashboard() {
         .or(`id.eq.${uid},user_id.eq.${uid}`).limit(1).maybeSingle();
 
       let todayQ = supabase.from('appointments')
-        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_id, payment_method, is_walk_in, services(name)')
+        .select('id, client_name, client_id, start_time, end_time, status, price_charged, date, service_id, notes, team_member_id, paid, payment_id, payment_method, is_walk_in, started_at, completed_at, actual_duration_minutes, services(name, duration_minutes)')
         .in('barber_id', ids).eq('date', today).order('start_time', { ascending: true });
       if (tmId) todayQ = (todayQ as any).eq('team_member_id', tmId);
       const todayRes = await todayQ;
@@ -261,6 +270,7 @@ export default function BarberDashboard() {
         ...a,
         price: a.price_charged,
         service_name: a.services?.name ?? null,
+        estimated_minutes: a.services?.duration_minutes ?? null,
         payment_type: a.payment_id ? (paymentMap[a.payment_id] || 'online') : null,
       }));
 
@@ -417,7 +427,11 @@ export default function BarberDashboard() {
       else if (newStatus === 'completed') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       else if (newStatus === 'cancelled') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
 
-      const { error } = await supabase.from('appointments').update({ status: newStatus }).eq('id', aptId);
+      const updatePayload: any = { status: newStatus };
+      if (newStatus === 'in_chair') {
+        updatePayload.started_at = new Date().toISOString();
+      }
+      const { error } = await supabase.from('appointments').update(updatePayload).eq('id', aptId);
       if (error) throw error;
 
       if (newStatus === 'completed') {
@@ -427,6 +441,32 @@ export default function BarberDashboard() {
 
       if (scopeRef.current.length && primaryId) await fetchData(scopeRef.current, primaryId, staffMemberId);
     } catch (err: any) { Alert.alert('Error', err.message || 'Failed to update'); }
+    setUpdatingId(null);
+  };
+
+  // ── Complete Session (records duration) ───────────────────────────────────
+  const completeSession = async (aptId: string) => {
+    setUpdatingId(aptId);
+    try {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const apt = todayApts.find(a => a.id === aptId);
+      const now = new Date();
+
+      let actualDuration: number | null = null;
+      if (apt?.started_at) {
+        actualDuration = Math.round((now.getTime() - new Date(apt.started_at).getTime()) / 60000);
+      }
+
+      const { error } = await supabase.from('appointments').update({
+        status: 'completed',
+        completed_at: now.toISOString(),
+        actual_duration_minutes: actualDuration,
+      }).eq('id', aptId);
+      if (error) throw error;
+
+      if (apt) fireCelebration(apt.client_name || 'Client', Number(apt.price) || 0);
+      if (scopeRef.current.length && primaryId) await fetchData(scopeRef.current, primaryId, staffMemberId);
+    } catch (err: any) { Alert.alert('Error', err.message || 'Failed to complete'); }
     setUpdatingId(null);
   };
 
@@ -624,7 +664,7 @@ export default function BarberDashboard() {
               return (
                 <View style={S.aptActions}>
                   <Tap onPress={async () => {
-                    await updateStatus(apt.id, 'completed');
+                    await completeSession(apt.id);
                     if (needsCharge) {
                       router.push({
                         pathname: '/(barber)/charge',
@@ -675,6 +715,34 @@ export default function BarberDashboard() {
   return (
     <SafeAreaView style={[S.container, { backgroundColor: C.bg }]} edges={['top']}>
       <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={C.bg} />
+
+      {/* ── Session Timer Pill ── */}
+      {inChairApts.length > 0 && (() => {
+        const apt = inChairApts[0];
+        const paysAtShop = apt.payment_method === 'at_shop' || !apt.payment_method;
+        const needsCharge = paysAtShop && !apt.paid;
+        return (
+          <SessionTimerPill
+            visible
+            startedAt={apt.started_at || new Date().toISOString()}
+            clientName={apt.client_name || 'Client'}
+            serviceName={apt.service_name}
+            servicePrice={apt.price}
+            estimatedMinutes={apt.estimated_minutes}
+            isWalkIn={apt.is_walk_in}
+            needsCharge={needsCharge}
+            onComplete={async () => {
+              await completeSession(apt.id);
+              if (needsCharge) {
+                router.push({
+                  pathname: '/(barber)/charge',
+                  params: { client_name: apt.client_name, client_id: apt.client_id || '', appointment_id: apt.id, prefill_amount: String(apt.price) },
+                });
+              }
+            }}
+          />
+        );
+      })()}
 
       {/* ── Header ── */}
       <Animated.View style={[S.header, { opacity: fadeAnim }]}>
@@ -812,7 +880,7 @@ export default function BarberDashboard() {
                         </View>
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={[S.inSessionTimer, { color: orange }]}>{elapsedSince(apt.start_time)}</Text>
+                        <Text style={[S.inSessionTimer, { color: orange }]}>{apt.started_at ? elapsedSinceTimestamp(apt.started_at) : elapsedSince(apt.start_time)}</Text>
                         {apt.price > 0 && <Text style={[S.inSessionPrice, { color: C.text2 }]}>${apt.price}</Text>}
                       </View>
                     </View>
@@ -820,7 +888,7 @@ export default function BarberDashboard() {
                     <Tap
                       disabled={updatingId === apt.id}
                       onPress={async () => {
-                        await updateStatus(apt.id, 'completed');
+                        await completeSession(apt.id);
                         if (needsCharge) {
                           router.push({
                             pathname: '/(barber)/charge',
